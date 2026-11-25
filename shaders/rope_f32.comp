@@ -1,0 +1,52 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint num_heads;
+    uint head_dim;
+    uint pos;
+    float theta_base;
+    uint rope_mode; // 0 = interleaved pairs (2j, 2j+1), 1 = NeoX half-split (j, j + half_dim)
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer BufIn { float in_data[]; };
+layout(set = 0, binding = 1) writeonly buffer BufOut { float out_data[]; };
+
+void main() {
+    uint half_dim = pc.head_dim >> 1u;
+    uint total_pairs = pc.num_heads * half_dim;
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= total_pairs) {
+        return;
+    }
+
+    uint h = gid / half_dim;
+    uint j = gid % half_dim;
+    uint h_base = h * pc.head_dim;
+
+    uint idx0;
+    uint idx1;
+    if (pc.rope_mode == 1u) {
+        idx0 = h_base + j;
+        idx1 = h_base + half_dim + j;
+    } else {
+        idx0 = h_base + (j << 1u);
+        idx1 = idx0 + 1u;
+    }
+
+    float x0 = in_data[idx0];
+    float x1 = in_data[idx1];
+
+    float exponent = -2.0 * float(j) / float(pc.head_dim);
+    float angle = float(pc.pos) * pow(pc.theta_base, exponent);
+    float c = cos(angle);
+    float s = sin(angle);
+
+    out_data[idx0] = x0 * c - x1 * s;
+    out_data[idx1] = x0 * s + x1 * c;
+
+    if ((pc.head_dim & 1u) != 0u && j == 0u) {
+        uint last = h_base + pc.head_dim - 1u;
+        out_data[last] = in_data[last];
+    }
+}

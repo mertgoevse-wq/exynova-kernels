@@ -1,0 +1,68 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint C_in;
+    uint H_in;
+    uint W_in;
+    uint C_out;
+    uint H_out;
+    uint W_out;
+    uint KH;
+    uint KW;
+    uint stride_h;
+    uint stride_w;
+    uint pad_h;
+    uint pad_w;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer BufIn { float in_data[]; };
+layout(set = 0, binding = 1) readonly buffer BufWeight { float w_data[]; };
+layout(set = 0, binding = 2) readonly buffer BufBias { float bias_data[]; };
+layout(set = 0, binding = 3) writeonly buffer BufOut { float out_data[]; };
+
+void main() {
+    uint hw_out = pc.H_out * pc.W_out;
+    uint chw_out = pc.C_out * hw_out;
+    uint total_out = pc.N * chw_out;
+
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= total_out) {
+        return;
+    }
+
+    uint n = idx / chw_out;
+    uint rem = idx % chw_out;
+    uint oc = rem / hw_out;
+    uint rem2 = rem % hw_out;
+    uint oh = rem2 / pc.W_out;
+    uint ow = rem2 % pc.W_out;
+
+    float acc = bias_data[oc];
+    uint in_n_base = n * pc.C_in * pc.H_in * pc.W_in;
+    uint w_oc_base = oc * pc.C_in * pc.KH * pc.KW;
+    uint hw_in = pc.H_in * pc.W_in;
+    uint k_hw = pc.KH * pc.KW;
+
+    for (uint ic = 0u; ic < pc.C_in; ++ic) {
+        uint in_c_base = in_n_base + ic * hw_in;
+        uint w_c_base = w_oc_base + ic * k_hw;
+        for (uint kh = 0u; kh < pc.KH; ++kh) {
+            int ih = int(oh * pc.stride_h + kh) - int(pc.pad_h);
+            if (ih < 0 || ih >= int(pc.H_in)) {
+                continue;
+            }
+            uint in_h_base = in_c_base + uint(ih) * pc.W_in;
+            uint w_h_base = w_c_base + kh * pc.KW;
+            for (uint kw = 0u; kw < pc.KW; ++kw) {
+                int iw = int(ow * pc.stride_w + kw) - int(pc.pad_w);
+                if (iw >= 0 && iw < int(pc.W_in)) {
+                    acc += in_data[in_h_base + uint(iw)] * w_data[w_h_base + kw];
+                }
+            }
+        }
+    }
+
+    out_data[idx] = acc;
+}

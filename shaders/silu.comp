@@ -1,0 +1,17 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint count;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer BufIn { float in_data[]; };
+layout(set = 0, binding = 1) writeonly buffer BufOut { float out_data[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx < pc.count) {
+        float x = in_data[idx];
+        out_data[idx] = x / (1.0 + exp(-x));
+    }
+}

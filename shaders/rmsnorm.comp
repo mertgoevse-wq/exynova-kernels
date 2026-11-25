@@ -1,0 +1,45 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint cols;
+    float eps;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer BufX { float x_data[]; };
+layout(set = 0, binding = 1) readonly buffer BufW { float w_data[]; };
+layout(set = 0, binding = 2) writeonly buffer BufOut { float out_data[]; };
+
+shared float sdata[256];
+
+void main() {
+    if (pc.cols == 0u) {
+        return;
+    }
+
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint row_offset = row * pc.cols;
+
+    float local_sum = 0.0;
+    for (uint c = tid; c < pc.cols; c += 256u) {
+        float v = x_data[row_offset + c];
+        local_sum += v * v;
+    }
+    sdata[tid] = local_sum;
+    barrier();
+
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        barrier();
+    }
+
+    float mean_sq = sdata[0] / float(pc.cols);
+    float inv_rms = inversesqrt(mean_sq + pc.eps);
+
+    for (uint c = tid; c < pc.cols; c += 256u) {
+        out_data[row_offset + c] = x_data[row_offset + c] * inv_rms * w_data[c];
+    }
+}

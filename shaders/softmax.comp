@@ -1,0 +1,60 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint rows;
+    uint cols;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer BufIn { float in_data[]; };
+layout(set = 0, binding = 1) writeonly buffer BufOut { float out_data[]; };
+
+shared float sdata[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    if (row >= pc.rows || pc.cols == 0u) {
+        return;
+    }
+
+    uint tid = gl_LocalInvocationID.x;
+    uint row_offset = row * pc.cols;
+
+    // 1. Row-wise maximum
+    float local_max = -3.402823466e+38;
+    for (uint c = tid; c < pc.cols; c += 256u) {
+        local_max = max(local_max, in_data[row_offset + c]);
+    }
+    sdata[tid] = local_max;
+    barrier();
+
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            sdata[tid] = max(sdata[tid], sdata[tid + s]);
+        }
+        barrier();
+    }
+    float row_max = sdata[0];
+    barrier();
+
+    // 2. Row-wise sum of exp(x - row_max)
+    float local_sum = 0.0;
+    for (uint c = tid; c < pc.cols; c += 256u) {
+        local_sum += exp(in_data[row_offset + c] - row_max);
+    }
+    sdata[tid] = local_sum;
+    barrier();
+
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        barrier();
+    }
+    float inv_sum = 1.0 / sdata[0];
+
+    // 3. Normalize and store
+    for (uint c = tid; c < pc.cols; c += 256u) {
+        out_data[row_offset + c] = exp(in_data[row_offset + c] - row_max) * inv_sum;
+    }
+}

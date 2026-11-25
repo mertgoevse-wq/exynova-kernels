@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="320" viewBox="0 0 860 320">
+<defs><linearGradient id="bgl" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#090D16"/><stop offset="100%" stop-color="#131B2E"/></linearGradient></defs>
+<rect width="860" height="320" rx="14" fill="url(#bgl)" stroke="#1E293B" stroke-width="2"/>
+<text x="28" y="36" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold">Galaxy A56 Heterogeneous AI Telemetry Snapshot</text>
+<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Real on-device Vulkan Compute + ENN NPU + HuggingFace LLM measurements</text>
+<rect x="28" y="85" width="256" height="155" rx="12" fill="#0F172A" stroke="#00E5FF" stroke-width="1.5"/>
+<text x="44" y="115" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">Xclipse 540 Peak MatMul</text>
+<text x="44" y="167" fill="#00E5FF" font-family="Consolas, monospace" font-size="28" font-weight="bold">19.14 GFLOPS</text>
+<text x="44" y="210" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">P50: 1753.4 us · 29.3x vs CPU</text>
+<rect x="302" y="85" width="256" height="155" rx="12" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
+<text x="318" y="115" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">ENN 2.3.30 NPU (.nnc)</text>
+<text x="318" y="167" fill="#10B981" font-family="Consolas, monospace" font-size="28" font-weight="bold">7.21 ms</text>
+<text x="318" y="210" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">/dev/vertex10 · ret=ENN_RET_SUCCESS</text>
+<rect x="576" y="85" width="256" height="155" rx="12" fill="#0F172A" stroke="#A78BFA" stroke-width="1.5"/>
+<text x="592" y="115" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">HF LLM (Q4_0)</text>
+<text x="592" y="167" fill="#A78BFA" font-family="Consolas, monospace" font-size="28" font-weight="bold">7.12 tok/s</text>
+<text x="592" y="210" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">BPE=True · NPU ctx=7.19 ms</text>
+<text x="28" y="275" fill="#CBD5E1" font-family="Consolas, monospace" font-size="12">Live LLM Sample: ", there was a little girl named Lily. She loved to play outside and explore the world around"</text>
+<text x="28" y="302" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">Verified on Samsung Galaxy A56 5G (SM-A566B / Exynos 1580) · Zero synthetic/mocked metrics</text>
+</svg>

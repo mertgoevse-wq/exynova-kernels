@@ -1,0 +1,59 @@
+#version 450
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PushConstants {
+    uint M;
+    uint K;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer BufWeights { uint weights_packed[]; };
+layout(set = 0, binding = 1) readonly buffer BufScales { float scales[]; };
+layout(set = 0, binding = 2) readonly buffer BufX { float x_data[]; };
+layout(set = 0, binding = 3) writeonly buffer BufY { float y_data[]; };
+
+shared float sdata[64];
+
+void main() {
+    uint m = gl_WorkGroupID.x;
+    if (m >= pc.M || pc.K == 0u) {
+        return;
+    }
+
+    uint tid = gl_LocalInvocationID.x;
+    uint words_per_row = pc.K >> 2u;
+    uint blocks_per_row = pc.K >> 5u;
+    uint weight_row_base = m * words_per_row;
+    uint scale_row_base = m * blocks_per_row;
+
+    float local_sum = 0.0;
+    for (uint w = tid; w < words_per_row; w += 64u) {
+        uint word = weights_packed[weight_row_base + w];
+        uint k_base = w << 2u;
+        float scale = scales[scale_row_base + (k_base >> 5u)];
+
+        int q0 = bitfieldExtract(int(word), 0, 8);
+        int q1 = bitfieldExtract(int(word), 8, 8);
+        int q2 = bitfieldExtract(int(word), 16, 8);
+        int q3 = bitfieldExtract(int(word), 24, 8);
+
+        float dot4 = float(q0) * x_data[k_base] +
+                     float(q1) * x_data[k_base + 1u] +
+                     float(q2) * x_data[k_base + 2u] +
+                     float(q3) * x_data[k_base + 3u];
+        local_sum += scale * dot4;
+    }
+
+    sdata[tid] = local_sum;
+    barrier();
+
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        barrier();
+    }
+
+    if (tid == 0u) {
+        y_data[m] = sdata[0];
+    }
+}

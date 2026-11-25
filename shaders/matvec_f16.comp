@@ -1,0 +1,46 @@
+#version 450
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PushConstants {
+    uint M;
+    uint K;
+} pc;
+
+// Packed IEEE-754 FP16 weights: 2 half-floats per uint32 word (unpackHalf2x16).
+layout(set = 0, binding = 0) readonly buffer BufWeightsF16 { uint weights_f16[]; };
+layout(set = 0, binding = 1) readonly buffer BufX { float x_data[]; };
+layout(set = 0, binding = 2) writeonly buffer BufY { float y_data[]; };
+
+shared float sdata[64];
+
+void main() {
+    uint m = gl_WorkGroupID.x;
+    if (m >= pc.M || pc.K == 0u) {
+        return;
+    }
+
+    uint tid = gl_LocalInvocationID.x;
+    uint pairs_per_row = pc.K >> 1u;
+    uint row_base = m * pairs_per_row;
+
+    float local_sum = 0.0;
+    for (uint p = tid; p < pairs_per_row; p += 64u) {
+        vec2 w01 = unpackHalf2x16(weights_f16[row_base + p]);
+        uint k_base = p << 1u;
+        local_sum += w01.x * x_data[k_base] + w01.y * x_data[k_base + 1u];
+    }
+
+    sdata[tid] = local_sum;
+    barrier();
+
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        barrier();
+    }
+
+    if (tid == 0u) {
+        y_data[m] = sdata[0];
+    }
+}
