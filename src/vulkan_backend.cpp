@@ -197,6 +197,7 @@ struct GpuBuffer {
     VkDeviceMemory memory   = VK_NULL_HANDLE;
     VkDeviceSize   size     = 0;
     bool           coherent = true;
+    void*          mapped   = nullptr;
 };
 
 struct BufferBinding {
@@ -226,6 +227,7 @@ struct VulkanComputeBackend::Impl {
     std::unordered_map<uint32_t, KernelPipeline> pipelines;
     std::unordered_map<const void*, GpuBuffer>   weight_cache;
     VkDeviceSize                                 cached_bytes = 0;
+    GpuBuffer                                    slot_buffers[4]{};
 
     void clear_weight_cache() {
         if (device != VK_NULL_HANDLE) {
@@ -241,6 +243,9 @@ struct VulkanComputeBackend::Impl {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
             clear_weight_cache();
+            for (int i = 0; i < 4; ++i) {
+                destroy_buffer(slot_buffers[i]);
+            }
             for (auto& kv : pipelines) {
                 KernelPipeline& kp = kv.second;
                 if (kp.pipeline != VK_NULL_HANDLE)
@@ -356,10 +361,25 @@ struct VulkanComputeBackend::Impl {
             return false;
         }
 
+        res = vkMapMemory(device, out_buf.memory, 0, VK_WHOLE_SIZE, 0, &out_buf.mapped);
+        if (res != VK_SUCCESS || !out_buf.mapped) {
+            vkFreeMemory(device, out_buf.memory, nullptr);
+            vkDestroyBuffer(device, out_buf.buffer, nullptr);
+            out_buf.memory = VK_NULL_HANDLE;
+            out_buf.buffer = VK_NULL_HANDLE;
+            out_buf.mapped = nullptr;
+            set_error(err, "vkMapMemory (persistent) failed: " + std::to_string(res));
+            return false;
+        }
+
         return true;
     }
 
     void destroy_buffer(GpuBuffer& buf) {
+        if (buf.mapped && buf.memory != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+            vkUnmapMemory(device, buf.memory);
+            buf.mapped = nullptr;
+        }
         if (buf.buffer != VK_NULL_HANDLE) {
             vkDestroyBuffer(device, buf.buffer, nullptr);
             buf.buffer = VK_NULL_HANDLE;
@@ -368,6 +388,17 @@ struct VulkanComputeBackend::Impl {
             vkFreeMemory(device, buf.memory, nullptr);
             buf.memory = VK_NULL_HANDLE;
         }
+        buf.size = 0;
+    }
+
+    bool ensure_slot_buffer(uint32_t slot_idx, VkDeviceSize needed_bytes, std::string* err) {
+        GpuBuffer& sb = slot_buffers[slot_idx];
+        if (sb.buffer != VK_NULL_HANDLE && sb.size >= needed_bytes && sb.mapped != nullptr) {
+            return true;
+        }
+        destroy_buffer(sb);
+        const VkDeviceSize alloc_sz = (needed_bytes < 65536ULL) ? 65536ULL : needed_bytes;
+        return create_buffer(alloc_sz, sb, err);
     }
 
     const KernelPipeline* get_or_create_pipeline(KernelId id, std::string* err) {
@@ -494,10 +525,10 @@ struct VulkanComputeBackend::Impl {
         }
 
         std::vector<GpuBuffer> gpu_bufs(binding_count);
-        std::vector<bool> is_cached(binding_count, false);
+        std::vector<bool> keep_alive(binding_count, false);
         auto cleanup_bufs = [&]() {
             for (uint32_t i = 0; i < binding_count; ++i) {
-                if (!is_cached[i]) {
+                if (!keep_alive[i]) {
                     destroy_buffer(gpu_bufs[i]);
                 }
             }
@@ -508,7 +539,7 @@ struct VulkanComputeBackend::Impl {
                 auto it = weight_cache.find(bindings[i].upload_data);
                 if (it != weight_cache.end() && it->second.size == bindings[i].size_bytes) {
                     gpu_bufs[i] = it->second;
-                    is_cached[i] = true;
+                    keep_alive[i] = true;
                     continue;
                 }
                 if (it != weight_cache.end()) {
@@ -516,25 +547,16 @@ struct VulkanComputeBackend::Impl {
                     destroy_buffer(it->second);
                     weight_cache.erase(it);
                 }
-                constexpr VkDeviceSize kMaxCacheBytes = 256ULL * 1024ULL * 1024ULL;
+                constexpr VkDeviceSize kMaxCacheBytes = 384ULL * 1024ULL * 1024ULL;
                 if (cached_bytes + bindings[i].size_bytes > kMaxCacheBytes) {
                     clear_weight_cache();
                 }
-            }
 
-            if (!create_buffer(bindings[i].size_bytes, gpu_bufs[i], err)) {
-                cleanup_bufs();
-                return false;
-            }
-            if (bindings[i].upload_data) {
-                void* mapped = nullptr;
-                VkResult res = vkMapMemory(device, gpu_bufs[i].memory, 0, bindings[i].size_bytes, 0, &mapped);
-                if (res != VK_SUCCESS) {
+                if (!create_buffer(bindings[i].size_bytes, gpu_bufs[i], err)) {
                     cleanup_bufs();
-                    set_error(err, "vkMapMemory (upload) failed: " + std::to_string(res));
                     return false;
                 }
-                std::memcpy(mapped, bindings[i].upload_data, static_cast<size_t>(bindings[i].size_bytes));
+                std::memcpy(gpu_bufs[i].mapped, bindings[i].upload_data, static_cast<size_t>(bindings[i].size_bytes));
                 if (!gpu_bufs[i].coherent) {
                     VkMappedMemoryRange range{};
                     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
@@ -543,12 +565,35 @@ struct VulkanComputeBackend::Impl {
                     range.size = VK_WHOLE_SIZE;
                     vkFlushMappedMemoryRanges(device, 1, &range);
                 }
-                vkUnmapMemory(device, gpu_bufs[i].memory);
+                weight_cache.emplace(bindings[i].upload_data, gpu_bufs[i]);
+                cached_bytes += bindings[i].size_bytes;
+                keep_alive[i] = true;
+                continue;
+            }
 
-                if (bindings[i].cache_upload && !bindings[i].download_data) {
-                    weight_cache.emplace(bindings[i].upload_data, gpu_bufs[i]);
-                    cached_bytes += bindings[i].size_bytes;
-                    is_cached[i] = true;
+            if (i < 4u) {
+                if (!ensure_slot_buffer(i, bindings[i].size_bytes, err)) {
+                    cleanup_bufs();
+                    return false;
+                }
+                gpu_bufs[i] = slot_buffers[i];
+                keep_alive[i] = true;
+            } else {
+                if (!create_buffer(bindings[i].size_bytes, gpu_bufs[i], err)) {
+                    cleanup_bufs();
+                    return false;
+                }
+            }
+
+            if (bindings[i].upload_data) {
+                std::memcpy(gpu_bufs[i].mapped, bindings[i].upload_data, static_cast<size_t>(bindings[i].size_bytes));
+                if (!gpu_bufs[i].coherent) {
+                    VkMappedMemoryRange range{};
+                    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                    range.memory = gpu_bufs[i].memory;
+                    range.offset = 0;
+                    range.size = VK_WHOLE_SIZE;
+                    vkFlushMappedMemoryRanges(device, 1, &range);
                 }
             }
         }
@@ -684,13 +729,6 @@ struct VulkanComputeBackend::Impl {
 
         for (uint32_t i = 0; i < binding_count; ++i) {
             if (bindings[i].download_data) {
-                void* mapped = nullptr;
-                res = vkMapMemory(device, gpu_bufs[i].memory, 0, bindings[i].size_bytes, 0, &mapped);
-                if (res != VK_SUCCESS) {
-                    cleanup_bufs();
-                    set_error(err, "vkMapMemory (download) failed: " + std::to_string(res));
-                    return false;
-                }
                 if (!gpu_bufs[i].coherent) {
                     VkMappedMemoryRange range{};
                     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
@@ -699,8 +737,8 @@ struct VulkanComputeBackend::Impl {
                     range.size = VK_WHOLE_SIZE;
                     vkInvalidateMappedMemoryRanges(device, 1, &range);
                 }
-                std::memcpy(bindings[i].download_data, mapped, static_cast<size_t>(bindings[i].size_bytes));
-                vkUnmapMemory(device, gpu_bufs[i].memory);
+                std::memcpy(bindings[i].download_data, gpu_bufs[i].mapped,
+                            static_cast<size_t>(bindings[i].size_bytes));
             }
         }
 

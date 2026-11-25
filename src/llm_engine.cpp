@@ -647,7 +647,7 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
     uint32_t version = 0;
     uint32_t quant_type = 0;
     LlmConfig cfg;
-    if (!read_pod(ifs, version) || (version != 1 && version != 2) ||
+    if (!read_pod(ifs, version) || (version < 1 || version > 3) ||
         !read_pod(ifs, cfg.vocab_size) ||
         !read_pod(ifs, cfg.dim) ||
         !read_pod(ifs, cfg.hidden_dim) ||
@@ -662,13 +662,22 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
         return false;
     }
 
-    if (version == 2) {
+    if (version >= 2) {
         if (!read_pod(ifs, cfg.rope_mode) ||
             !read_pod(ifs, cfg.bos_token_id) ||
             !read_pod(ifs, cfg.eos_token_id)) {
             set_err(err, "Failed to read .exyllm v2 extended header");
             return false;
         }
+    }
+    if (version >= 3) {
+        uint32_t qkv_bias_flag = 0;
+        if (!read_pod(ifs, qkv_bias_flag) ||
+            !read_pod(ifs, cfg.alt_eos_token_id)) {
+            set_err(err, "Failed to read .exyllm v3 extended header");
+            return false;
+        }
+        cfg.has_qkv_bias = (qkv_bias_flag != 0u);
     }
 
     if (!validate_config(cfg, err)) {
@@ -694,8 +703,18 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
         if (!read_f32_vec(ifs, lw.attn_norm, cfg.dim) ||
             !read_matrix(ifs, quant_type, cfg.dim, cfg.dim, lw.wq, err) ||
             !read_matrix(ifs, quant_type, kv_dim, cfg.dim, lw.wk, err) ||
-            !read_matrix(ifs, quant_type, kv_dim, cfg.dim, lw.wv, err) ||
-            !read_matrix(ifs, quant_type, cfg.dim, cfg.dim, lw.wo, err) ||
+            !read_matrix(ifs, quant_type, kv_dim, cfg.dim, lw.wv, err)) {
+            return false;
+        }
+        if (cfg.has_qkv_bias) {
+            if (!read_f32_vec(ifs, lw.bq, cfg.dim) ||
+                !read_f32_vec(ifs, lw.bk, kv_dim) ||
+                !read_f32_vec(ifs, lw.bv, kv_dim)) {
+                set_err(err, "Failed to read QKV bias vectors from .exyllm v3 file");
+                return false;
+            }
+        }
+        if (!read_matrix(ifs, quant_type, cfg.dim, cfg.dim, lw.wo, err) ||
             !read_f32_vec(ifs, lw.ffn_norm, cfg.dim) ||
             !read_matrix(ifs, quant_type, cfg.hidden_dim, cfg.dim, lw.w1, err) ||
             !read_matrix(ifs, quant_type, cfg.dim, cfg.hidden_dim, lw.w2, err) ||
@@ -756,108 +775,128 @@ std::vector<uint32_t> LlmEngine::encode_prompt(const std::string& prompt) const 
 
     std::vector<uint32_t> tokens;
     tokens.reserve(prompt.size() + 4);
-    if (cfg_.bos_token_id < cfg_.vocab_size) {
+    // Only prepend BOS automatically when prompt doesn't already start with a ChatML special tag
+    const bool starts_with_special = (prompt.rfind("<|", 0) == 0);
+    if (!starts_with_special && tok_style_ == 0 && cfg_.bos_token_id < cfg_.vocab_size) {
         tokens.push_back(cfg_.bos_token_id);
     }
     if (prompt.empty()) {
         return tokens;
     }
 
-    std::string norm;
-    if (tok_style_ == 0) {
-        // SentencePiece style: leading space + spaces mapped to U+2581 ('\xe2\x96\x81')
-        norm.reserve(prompt.size() * 2 + 4);
-        if (piece_to_id_.find("\xE2\x96\x81") != piece_to_id_.end()) {
-            norm += "\xE2\x96\x81";
-        }
-        for (unsigned char c : prompt) {
-            if (c == ' ') {
+    auto bpe_encode_chunk = [&](const std::string& chunk) {
+        std::string norm;
+        if (tok_style_ == 0) {
+            norm.reserve(chunk.size() * 2 + 4);
+            if (piece_to_id_.find("\xE2\x96\x81") != piece_to_id_.end()) {
                 norm += "\xE2\x96\x81";
-            } else {
-                norm.push_back(static_cast<char>(c));
             }
-        }
-    } else if (tok_style_ == 2) {
-        // Raw UTF-8 BPE (karpathy/llama2.c tokenizer.bin): literal ' ' spaces
-        norm = prompt;
-    } else {
-        // Byte-level BPE style (SmolLM2 / Qwen2.5): spaces mapped to 'Ġ' (\xc4\xa0), newline to 'Ċ' (\xc4\x8a)
-        for (unsigned char c : prompt) {
-            if (c == ' ') {
-                norm += "\xC4\xA0";
-            } else if (c == '\n') {
-                norm += "\xC4\x8A";
-            } else {
-                norm.push_back(static_cast<char>(c));
+            for (unsigned char c : chunk) {
+                if (c == ' ') norm += "\xE2\x96\x81";
+                else norm.push_back(static_cast<char>(c));
             }
-        }
-    }
-
-    // Initial UTF-8 codepoint split into vocab IDs (falling back to <0xXX> byte tokens)
-    std::vector<uint32_t> seq;
-    size_t i = 0;
-    while (i < norm.size()) {
-        const unsigned char b = static_cast<unsigned char>(norm[i]);
-        size_t cp_len = 1;
-        if ((b & 0xE0u) == 0xC0u) cp_len = 2;
-        else if ((b & 0xF0u) == 0xE0u) cp_len = 3;
-        else if ((b & 0xF8u) == 0xF0u) cp_len = 4;
-        if (i + cp_len > norm.size()) cp_len = 1;
-
-        std::string ch = norm.substr(i, cp_len);
-        auto it = piece_to_id_.find(ch);
-        if (it != piece_to_id_.end()) {
-            seq.push_back(it->second);
+        } else if (tok_style_ == 2) {
+            norm = chunk;
         } else {
-            for (size_t k = 0; k < ch.size(); ++k) {
-                char byte_tok[16];
-                std::snprintf(byte_tok, sizeof(byte_tok), "<0x%02X>",
-                              static_cast<unsigned char>(ch[k]));
-                auto bit = piece_to_id_.find(byte_tok);
-                if (bit != piece_to_id_.end()) {
-                    seq.push_back(bit->second);
-                } else {
-                    auto raw_it = piece_to_id_.find(ch.substr(k, 1));
-                    if (raw_it != piece_to_id_.end()) {
-                        seq.push_back(raw_it->second);
+            for (unsigned char c : chunk) {
+                if (c == ' ') norm += "\xC4\xA0";
+                else if (c == '\n') norm += "\xC4\x8A";
+                else norm.push_back(static_cast<char>(c));
+            }
+        }
+
+        std::vector<uint32_t> seq;
+        size_t i = 0;
+        while (i < norm.size()) {
+            const unsigned char b = static_cast<unsigned char>(norm[i]);
+            size_t cp_len = 1;
+            if ((b & 0xE0u) == 0xC0u) cp_len = 2;
+            else if ((b & 0xF0u) == 0xE0u) cp_len = 3;
+            else if ((b & 0xF8u) == 0xF0u) cp_len = 4;
+            if (i + cp_len > norm.size()) cp_len = 1;
+
+            std::string ch = norm.substr(i, cp_len);
+            auto it = piece_to_id_.find(ch);
+            if (it != piece_to_id_.end()) {
+                seq.push_back(it->second);
+            } else {
+                for (size_t k = 0; k < ch.size(); ++k) {
+                    char byte_tok[16];
+                    std::snprintf(byte_tok, sizeof(byte_tok), "<0x%02X>",
+                                  static_cast<unsigned char>(ch[k]));
+                    auto bit = piece_to_id_.find(byte_tok);
+                    if (bit != piece_to_id_.end()) {
+                        seq.push_back(bit->second);
+                    } else {
+                        auto raw_it = piece_to_id_.find(ch.substr(k, 1));
+                        if (raw_it != piece_to_id_.end()) {
+                            seq.push_back(raw_it->second);
+                        }
                     }
                 }
             }
+            i += cp_len;
         }
-        i += cp_len;
-    }
 
-    // Greedy score-ordered BPE merge loop
-    while (seq.size() >= 2) {
-        float best_score = -1e30f;
-        uint32_t best_id = 0;
-        size_t best_pos = seq.size();
-
-        for (size_t p = 0; p + 1 < seq.size(); ++p) {
-            if (seq[p] >= vocab_.size() || seq[p + 1] >= vocab_.size()) continue;
-            std::string merged = vocab_[seq[p]].piece + vocab_[seq[p + 1]].piece;
-            auto it = piece_to_id_.find(merged);
-            if (it != piece_to_id_.end()) {
-                const float sc = vocab_[it->second].score;
-                if (sc > best_score) {
-                    best_score = sc;
-                    best_id = it->second;
-                    best_pos = p;
+        while (seq.size() >= 2) {
+            float best_score = -1e30f;
+            uint32_t best_id = 0;
+            size_t best_pos = seq.size();
+            for (size_t p = 0; p + 1 < seq.size(); ++p) {
+                if (seq[p] >= vocab_.size() || seq[p + 1] >= vocab_.size()) continue;
+                std::string merged = vocab_[seq[p]].piece + vocab_[seq[p + 1]].piece;
+                auto it = piece_to_id_.find(merged);
+                if (it != piece_to_id_.end()) {
+                    const float sc = vocab_[it->second].score;
+                    if (sc > best_score) {
+                        best_score = sc;
+                        best_id = it->second;
+                        best_pos = p;
+                    }
                 }
             }
+            if (best_pos == seq.size()) break;
+            seq[best_pos] = best_id;
+            seq.erase(seq.begin() + static_cast<std::ptrdiff_t>(best_pos + 1));
         }
-        if (best_pos == seq.size()) {
+
+        for (uint32_t id : seq) {
+            if (id < cfg_.vocab_size) tokens.push_back(id);
+        }
+    };
+
+    // Match known atomic special tokens (<|im_start|>, <|im_end|>, <|endoftext|>, <s>, </s>)
+    static const char* kSpecialTags[] = {
+        "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|assistant|>", "<|user|>", "<|system|>"
+    };
+    size_t pos = 0;
+    while (pos < prompt.size()) {
+        size_t next_tag_pos = std::string::npos;
+        size_t next_tag_len = 0;
+        uint32_t next_tag_id = 0;
+        for (const char* tag : kSpecialTags) {
+            auto it = piece_to_id_.find(tag);
+            if (it == piece_to_id_.end()) continue;
+            size_t found = prompt.find(tag, pos);
+            if (found != std::string::npos && (next_tag_pos == std::string::npos || found < next_tag_pos)) {
+                next_tag_pos = found;
+                next_tag_len = std::strlen(tag);
+                next_tag_id = it->second;
+            }
+        }
+        if (next_tag_pos == std::string::npos) {
+            bpe_encode_chunk(prompt.substr(pos));
             break;
         }
-        seq[best_pos] = best_id;
-        seq.erase(seq.begin() + static_cast<std::ptrdiff_t>(best_pos + 1));
+        if (next_tag_pos > pos) {
+            bpe_encode_chunk(prompt.substr(pos, next_tag_pos - pos));
+        }
+        if (next_tag_id < cfg_.vocab_size) {
+            tokens.push_back(next_tag_id);
+        }
+        pos = next_tag_pos + next_tag_len;
     }
 
-    for (uint32_t id : seq) {
-        if (id < cfg_.vocab_size) {
-            tokens.push_back(id);
-        }
-    }
     if (tokens.empty()) {
         tokens.push_back(cfg_.bos_token_id < cfg_.vocab_size ? cfg_.bos_token_id : 0u);
     }
@@ -1126,6 +1165,11 @@ bool LlmEngine::forward_token(uint32_t token_id, uint32_t pos,
             !run_matvec(lw.wv, xb_.data(), v_.data(), err)) {
             return false;
         }
+        if (cfg_.has_qkv_bias) {
+            for (uint32_t i = 0; i < dim && i < lw.bq.size(); ++i) q_[i] += lw.bq[i];
+            for (uint32_t i = 0; i < kv_dim && i < lw.bk.size(); ++i) k_[i] += lw.bk[i];
+            for (uint32_t i = 0; i < kv_dim && i < lw.bv.size(); ++i) v_[i] += lw.bv[i];
+        }
         if (!run_rope(q_.data(), q_rot_.data(), cfg_.n_heads, head_dim, pos, err) ||
             !run_rope(k_.data(), k_rot_.data(), cfg_.n_kv_heads, head_dim, pos, err)) {
             return false;
@@ -1298,10 +1342,15 @@ GenerationResult LlmEngine::generate(const std::string& prompt,
     const auto t_decode_start = std::chrono::steady_clock::now();
     for (uint32_t step = 0; step < to_gen; ++step) {
         const uint32_t next_tok = sample_token(logits, temperature, rng_state);
-        if (has_vocab_ && next_tok == cfg_.eos_token_id) {
+        if (has_vocab_ && (next_tok == cfg_.eos_token_id ||
+                           (cfg_.alt_eos_token_id != 0u && next_tok == cfg_.alt_eos_token_id))) {
             break;
         }
-        res.text += decode_token(next_tok);
+        const std::string piece = decode_token(next_tok);
+        if (has_vocab_ && (piece == "<|im_end|>" || piece == "<|endoftext|>" || piece == "</s>")) {
+            break;
+        }
+        res.text += piece;
         ++res.tokens_generated;
 
         if (pos >= cfg_.max_seq_len || step + 1u >= to_gen) {

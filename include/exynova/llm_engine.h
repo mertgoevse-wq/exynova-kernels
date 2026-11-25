@@ -43,6 +43,8 @@ struct LlmConfig {
     uint32_t rope_mode = 0;  // 0 = Llama interleaved, 1 = NeoX half-split
     uint32_t bos_token_id = 1;
     uint32_t eos_token_id = 2;
+    bool has_qkv_bias = false;
+    uint32_t alt_eos_token_id = 0;
 };
 
 struct Q8_0Matrix {
@@ -118,6 +120,9 @@ struct TransformerLayerWeights {
     WeightMatrix wq;
     WeightMatrix wk;
     WeightMatrix wv;
+    std::vector<float> bq;
+    std::vector<float> bk;
+    std::vector<float> bv;
     WeightMatrix wo;
 
     std::vector<float> ffn_norm;
@@ -175,6 +180,7 @@ public:
     QuantType quant_type() const { return quant_type_; }
     size_t model_bytes() const;
     const LlmConfig& config() const { return cfg_; }
+    std::vector<uint32_t> encode_prompt(const std::string& prompt) const;
 
 private:
     struct VocabEntry {
@@ -184,7 +190,6 @@ private:
 
     bool validate_config(const LlmConfig& cfg, std::string* err) const;
     void allocate_state();
-    std::vector<uint32_t> encode_prompt(const std::string& prompt) const;
     std::string decode_token(uint32_t token_id) const;
 
     bool run_rmsnorm(const float* x, const float* w, float* out,

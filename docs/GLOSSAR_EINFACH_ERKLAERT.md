@@ -1,51 +1,67 @@
-# ExyNova Glossar — Alle Fachbegriffe einfach erklärt (mit Beispielen)
+# ExyNova einfach erklärt — Fachbegriffe ohne Vorwissen
 
-Dieses Dokument erklärt alle technischen Begriffe rund um **ExyNova**, **KI auf dem Smartphone**, **NPU & GPU**, **Flappy Bird AI** und **Quantisierung** ohne kompliziertes Kauderwelsch.
+Hier findest du alle wichtigen Wörter rund um KI auf dem Smartphone (Galaxy A56 / Exynos 1580) – einfach erklärt mit Beispielen aus dem Alltag.
 
 ---
 
-### 1. Shader & Compute-Shader
-- **Was ist das?** Ein kleines Mini-Programm (oft nur 30–60 Zeilen), das direkt auf der **GPU (Grafikchip)** tausende Male **gleichzeitig** ausgeführt wird.
-- **Alltags-Beispiel:** Stell dir vor, ein Lehrer (CPU) korrigiert 1.000 Klassenarbeiten einzeln nacheinander. Ein **Shader** ist, als würden 1.000 Lehrer gleichzeitig je genau **eine** Aufgabe in einer einzigen Sekunde korrigieren.
-- **Bei ExyNova:** Unsere Dateien `.comp` (z. B. `matvec_q4_0.comp`) rechnen Blitzschnell Matrix-Zeilen für Sprachmodelle und Flappy-Bird-Entscheidungen auf der **Xclipse 540 GPU** aus.
+## 1. CPU vs. GPU vs. NPU — Wer macht was im Handy?
 
-### 2. SPIR-V
-- **Was ist das?** Die fertige, kompakte Maschinensprache-Zwischenform, in die ein Shader übersetzt wird (wie eine MP3-Datei gegenüber Notenblättern).
-- **Wozu gut?** Das Smartphone muss den Code nicht mühsam als Text neu übersetzen — Androids **Vulkan**-Treiber versteht SPIR-V sofort und startet ihn blitzschnell. `spirv-val` prüft vorab, ob jede einzelne Instruktion fehlerfrei ist.
+Stell dir dein Smartphone wie eine große Großküche vor:
 
-### 3. GPU vs. NPU vs. CPU (Wer macht was im Galaxy A56?)
-- **CPU (Prozessor):** Der Chefkoch. Extrem schlau bei komplizierten Ja/Nein-Entscheidungen (Dateien laden, Spiel-Logik, App-Menü), aber nur wenige Kerne (8 Kerne).
-- **GPU (Xclipse 540 Grafikchip):** Eine riesige Mannschaft aus Rechenkernen. Ideal für Spiele-Grafik **und** große KI-Sprachmodelle (LLMs), weil LLMs vor allem aus Millionen einfacher Mal-und-Plus-Rechnungen bestehen.
-- **NPU (Exynos Neural Processing Unit):** Ein reiner KI-Spezialchip. Noch sparsamer als die GPU, aber bei Samsung extrem spezialisiert auf fest kompilierte KI-Netze (z. B. Bild-Segmentierung wie `SRIB_HumanSegVideoLite...nnc`).
+| Chip-Teil | Alltagsbeispiel | Was es besonders gut kann | Wie ExyNova ihn nutzt |
+|---|---|---|---|
+| **CPU** (Hauptprozessor) | **Chefkoch mit 8 Händen** – extrem schlau, kümmert sich um Ordnung, App-Steuerung & schwere Einzelaufgaben. | Viele verschiedene Regeln nacheinander abarbeiten. | Steuert die App, lädt Dateien, baut Prompts zusammen. |
+| **GPU** (`Xclipse 540`) | **Große Brigade aus hunderten Hilfsköchen**, alle schneiden exakt gleichzeitig Karotten. | Tausende kleine Rechenschritte *gleichzeitig* (Spiele, Chatbot-Antworten berechnen). | Führt **Sprachmodelle (LLMs)** wie `SmolLM2` / `Qwen2.5`, Spiele (`Flappy AI`, `Neon Swarm`) per **Vulkan** aus. |
+| **NPU** (`Samsung ENN`) | **Spezial-Maschine nur für fertige Tiefkühlpizzen** – blitzschnell & stromsparend, aber sie backt keine eigenen Rezepte. | Vorgebackene KI-Aufgaben (z. B. Kamera-Hintergrund erkennen) extrem effizient ausführen. | Führt echte Samsung-Systemmodelle (`.nnc`) auf `/dev/vertex10` aus – z. B. für Szenen-Erkennung & unseren Live-Beweis. |
 
-### 4. Quantisierung (`FP32`, `FP16`, `Q8_0`, `Q4_0`, `INT8`)
-- **Was ist das?** KI-Modelle bestehen aus Millionen Gewichten (Zahlen). Standardmäßig braucht jede Zahl viel Speicher (**FP32** = 32 Bit, so genau wie 8 Nachkommastellen). **Quantisierung** rundet diese Zahlen geschickt auf kleinere Formate, sodass sie extrem wenig Speicher brauchen und die GPU sie viel schneller aus dem RAM laden kann!
-- **Alltags-Beispiel:** Ein Foto in **RAW (40 MB)** vs. **JPEG (2 MB)**. Es sieht fast genauso gut aus, lädt aber 8× schneller.
-- **Die Stufen bei ExyNova:**
-  - **FP32 (32-Bit):** Maximale Präzision, größter Speicherbedarf (1×).
-  - **FP16 (16-Bit):** Halbe Größe (2× kleiner), praktisch kein Qualitätsverlust.
-  - **Q8_0 (8-Bit):** 4× kleiner als FP32 — jeweils 32 Zahlen teilen sich einen gemeinsamen Maßstab (*Scale*), super scharf.
-  - **Q4_0 (4-Bit):** **8× kleiner** als FP32! Jede Zahl passt in nur ein halbes Byte (*Nibble*, 16 Stufen). Perfekt für schnelle lokale Sprachmodelle auf dem Smartphone.
+---
 
-### 5. ELLM-Loader (ExyNova LLM Loader)
-- **Was ist das?** Unser eigens gebauter Modell-Lader für das kompakte Format `.exyllm`.
-- **Was tut er?** Er öffnet die Modell-Datei, prüft den Header (`ELLM`), liest den Wortschatz (`.tok` BPE-Tokenizer) und schiebt alle Gewichte direkt in den schnellen GPU-Zwischenspeicher (**Weight Cache**), statt sie bei jedem Wort neu zu kopieren.
+## 2. Shader (Rechenprogramm für die GPU)
 
-### 6. KV-Cache (Key-Value Cache)
-- **Was ist das?** Das „Kurzzeitgedächtnis“ eines Chatbots während des Tippens.
-- **Alltags-Beispiel:** Wenn du einen Satz Wort für Wort weiterliest, liest du nicht vor jedem neuen Wort das ganze Buch wieder von Seite 1 an. Genau das verhindert der KV-Cache: Er speichert bereits berechnete Aufmerksamkeits-Werte (Keys & Values) im Speicher, damit jedes weitere Wort sofort berechnet wird.
+* **Was ist das?** Ein kleines Mini-Programm, das nicht auf der CPU läuft, sondern auf allen hunderten kleinen Kernen deiner GPU gleichzeitig.
+* **Beispiel:** In einem LLM musst du Millionen Zahlen multiplizieren und addieren. Ein **Compute-Shader** (geschrieben in GLSL -> übersetzt in **SPIR-V**-Maschinencode) gibt jedem GPU-Kern ein kleines Stück dieser Liste, und alle rechnen im selben Moment.
+* **Ohne Shader** müsste die CPU die Liste Stück für Stück allein abarbeiten.
 
-### 7. `.tflite` / `.nnc` / FlatBuffer / `TargetHw`
-- **FlatBuffer:** Ein cleveres Speicherformat von Google, bei dem man Daten sofort lesen kann, ohne sie erst mühsam auszupacken (Zero-Copy).
-- **`.tflite` (`TFL3`) → `.nnc` (`ENNC`):** Google speichert mobile Modelle als `.tflite`. Samsung nennt das nahezu identische Container-Format auf der NPU **ENNC** (`.nnc`). Unser Übersetzer schreibt die Kennung + Schema-Version (`211`) um und prüft das Feld **`TargetHw`** (Ziel-Chip: `1 = NPU`, `2 = GPU`), ob Samsung den fertigen Hardware-Maschinencode (**NCP v26**) bereits erwartet.
+---
 
-### 8. RMSNorm & RoPE
-- **RMSNorm:** Hält die Rechenwerte zwischen den KI-Schichten in einer gesunden Größe (wie ein Lautstärke-Normalisierer bei Musik, damit nichts übersteuert oder zu leise wird).
-- **RoPE (Rotary Position Embedding):** Dreht Zahlpaare leicht je nach Wort-Position. So weiß das KI-Modell den Unterschied zwischen *„Hund beißt Mann“* und *„Mann beißt Hund“*.
+## 3. Vulkan & SPIR-V
 
-### 9. JNI & NDK
-- **NDK (Native Development Kit):** Werkzeugkasten, mit dem man extrem schnellen C/C++-Code direkt für Android-Prozessoren kompiliert.
-- **JNI (Java Native Interface):** Die „Übersetzer-Brücke“ zwischen unserer schicken Android-Oberfläche (Java) und der schnellen C++ / Vulkan / NPU Engine.
+* **Vulkan** ist so etwas wie die **Steckdose / gemeinsame Sprache**, über die unsere App direkt mit der Samsung Xclipse 540 GPU spricht – ohne Umwege.
+* **SPIR-V** ist die **komprimierte Anleitungskarte**, die Vulkan in Sekundenbruchteilen direkt an die GPU-Kerne schickt. ExyNova bringt 12 eigene, fertige SPIR-V-Karten mit (z. B. für Matrix-Multiplikation, RoPE, RMSNorm, Q4_0, Q8_0, Softmax, Conv2D).
 
-### 10. „Abliterated“ / Uncensored Modelle (für Sicherheitsforschung)
-- **Was ist das?** Normale Chatbots haben eingebaute Verweigerungs-Regeln. Forscher nutzen die *Abliteration*-Technik (Entfernen genau der mathematischen Richtung im Netzwerk, die Pauschal-Ablehnungen auslöst), um **defensiv** testen zu können, ob externe Schutzfilter, Guardrails oder eigene System-Prompts gegen Prompt-Injections standhalten.
+---
+
+## 4. Quantisierung (`FP32`, `FP16`, `Q8_0`, `Q4_0`)
+
+KI-Modelle bestehen aus Millionen "Gewichten" (Nachkommastellen wie `0.38492017...`).
+
+* **`FP32` (32-Bit):** Riesige Genauigkeit (wie jede Zutat aufs Millionstel Gramm abwiegen) – verbraucht sehr viel Speicher und Zeit.
+* **`FP16` (16-Bit):** Halbe Größe – wie 2 Stellen nach dem Komma. Meist genau genug.
+* **`Q8_0` (8-Bit):** Ganze kleine Zahlen (-127 bis +127) pro Block. ~4x kleiner als FP32!
+* **`Q4_0` (4-Bit):** Nur 16 mögliche Abstufungen pro Gewicht (~8x kleiner als FP32!). Wie eine grobe Messbecher-Skala statt Laborwaage – für Chatbots immer noch erstaunlich klug, aber passt locker in den Handy-Speicher und läuft deutlich schneller.
+
+---
+
+## 5. `ELLM-Loader` & `.exyllm`-Dateien (`v1` / `v2` / `v3`)
+
+* Modelle auf HuggingFace kommen in großen PC-Paketen (`.safetensors`).
+* Der **`ELLM-Loader`** (`LlmEngine`) in ExyNova ist unser eigenes, schlankes Leseprogramm fürs Handy: Er liest unsere kompakte `.exyllm`-Datei, erkennt Architektur-Details (Schichten, `NeoX-RoPE`, `QKV-Bias` ab `v3`), lädt die komprimierten Gewichte einmalig in schnellen GPU-Speicher und merkt sich das bisherige Gespräch im **KV-Cache** (damit das Modell nicht bei jedem neuen Wort das ganze Gespräch von vorne durchrechnen muss!).
+
+---
+
+## 6. `.tok` (`ETOK`), BPE & `ChatML`
+
+* Eine KI liest keine Wörter wie "Hallo", sondern zerlegt Text in **Tokens** (Wortbausteine wie `"Hal"` + `"lo"` -> Token-Nummern `#1204`, `#881`).
+* **BPE (Byte-Pair Encoding):** Die Methode, wie seltene Wörter kleingeschnitten werden, sodass jede Sprache (auch Deutsch) darstellbar ist.
+* **`ETOK` (`.exyllm.tok`):** Unsere handliche Wörterbuch-Datei passend zur `.exyllm`-Datei.
+* **`ChatML`:** Ein einfaches Format mit Markierungen (`<|im_start|>user ... <|im_end|>`), damit ein Chat-Modell genau weiß: *"Ah, das hat der Mensch gefragt, jetzt bin ICH dran mit Antworten!"*
+
+---
+
+## 7. `.nnc`, `ENNC`, `NCP v26` & Warum Chatbots nicht einfach "NPU-only" laufen
+
+* Samsung-Smartphones nutzen für Kamera-Effekte das Format **`.nnc`** (Magic-Bytes `ENNC`) über den **ENN-Dienst** (`libenn_user.so` -> `/dev/vertex10`).
+* **Wichtige Erkenntnis aus unserer Analyse auf dem Galaxy A56:**
+  * Samsung-`.nnc`-Dateien haben **keine kryptografische Signaturprüfung**, die eigene Dateien blockiert!
+  * Warum laufen eigene `TFLite`- oder `Qwen`-Chatbots trotzdem nicht auf der NPU allein? Weil im Inneren einer echten NPU-`.nnc`-Datei (`TargetHw=4 / Op 1013 ENN_NPU`) ein **fertiges Maschinenprogramm im Format `NCP v26` (`CUCODE` / CMDQ-Befehle)** steckt. Das ist reiner Binärcode für Samsungs geschlossene NPU-Recheneinheit – vergleichbar mit einer fertigen Playstation-Disc. Den Offline-Compiler dafür (`nncontainer-gen`) gibt Samsung nicht öffentlich heraus.
+  * Deswegen führt ExyNova **Chatbots ehrlich und komplett offen auf deiner Xclipse 540 GPU (Vulkan)** aus und beweist gleichzeitig die **echte NPU-Nutzung** über valide `.nnc`-Systemmodelle auf `/dev/vertex10` (ohne vorgetäuschte Fake-Ergebnisse).

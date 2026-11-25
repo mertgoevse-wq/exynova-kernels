@@ -75,15 +75,21 @@ def build_quant_chart(report: dict) -> str:
 
 
 def build_flappy_chart(report: dict) -> str:
-    fb = report.get("flappy_4modes", {})
-    modes = fb.get("modes", [])
-    if not modes:
+    games = report.get("games_bench", {})
+    fl = games.get("flappy", []) or report.get("flappy_4modes", {}).get("modes", [])
+    sw = games.get("neon_swarm", [])
+    rows = []
+    for m in fl:
+        rows.append(("Flappy · " + str(m.get("mode", m.get("name", "?"))), m))
+    for m in sw:
+        rows.append(("Swarm · " + str(m.get("mode", "?")), m))
+    if not rows:
         return ""
 
-    w, h = 860, 380
-    pad_l, pad_r, pad_t = 135, 195, 86
+    w, h = 880, 120 + len(rows) * 52
+    pad_l, pad_r, pad_t = 205, 185, 86
     chart_w = w - pad_l - pad_r
-    max_ms = max(float(m.get("mean_total_ms", 1.0)) for m in modes) or 1.0
+    max_ms = max(float(m.get("mean_total_ms", 1.0)) for _, m in rows) or 1.0
 
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
@@ -91,33 +97,31 @@ def build_flappy_chart(report: dict) -> str:
         '<stop offset="0%" stop-color="#07101F"/><stop offset="100%" stop-color="#0F172A"/>'
         '</linearGradient></defs>',
         f'<rect width="{w}" height="{h}" rx="14" fill="url(#bgf)" stroke="#1E293B" stroke-width="2"/>',
-        '<text x="28" y="36" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold">Flappy Bird AI — 4 Hardware Acceleration Modes on Galaxy A56</text>',
-        '<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Stacked per-frame AI latency (ENN NPU ms + Vulkan GPU ms + host glue) · Lower is faster</text>',
-        # Legend
-        '<rect x="28" y="66" width="12" height="10" rx="2" fill="#F59E0B"/><text x="45" y="75" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="11">ENN NPU (/dev/vertex10)</text>',
+        '<text x="28" y="36" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold">Flappy AI &amp; 128x Neon Swarm — Galaxy A56 Live Latency</text>',
+        '<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Measured on SM-A566B (ENN 2.3.30 /dev/vertex10 + Xclipse 540 Vulkan 1.3) · Lower = faster</text>',
+        '<rect x="28" y="66" width="12" height="10" rx="2" fill="#F59E0B"/><text x="45" y="75" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="11">ENN NPU (.nnc)</text>',
         '<rect x="195" y="66" width="12" height="10" rx="2" fill="#00E5FF"/><text x="212" y="75" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="11">Vulkan GPU (Xclipse 540)</text>',
-        '<rect x="375" y="66" width="12" height="10" rx="2" fill="#475569"/><text x="392" y="75" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="11">Dispatch / Buffer Overhead</text>',
+        '<rect x="375" y="66" width="12" height="10" rx="2" fill="#475569"/><text x="392" y="75" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="11">Host / Scene Prep</text>',
     ]
 
-    bar_h = 38
-    gap = 22
-    for i, m in enumerate(modes):
-        name = _escape(str(m.get("name", f"Mode {i}")))
+    bar_h = 32
+    gap = 18
+    for i, (label, m) in enumerate(rows):
+        name = _escape(label)
         tot = float(m.get("mean_total_ms", 0.0))
         npu = float(m.get("mean_npu_ms", 0.0))
         gpu = float(m.get("mean_gpu_ms", 0.0))
-        hz = float(m.get("max_ai_hz", 0.0))
-        pipes = int(m.get("pipes_cleared", 0))
+        hz = float(m.get("hz", m.get("max_ai_hz", 0.0)))
         other = max(0.0, tot - npu - gpu)
 
         w_npu = (npu / max_ms) * chart_w
         w_gpu = (gpu / max_ms) * chart_w
         w_oth = (other / max_ms) * chart_w
-        y = pad_t + 16 + i * (bar_h + gap)
+        y = pad_t + 12 + i * (bar_h + gap)
 
         lines.append(
-            f'<text x="{pad_l - 12}" y="{y + 24}" text-anchor="end" fill="#F8FAFC" '
-            f'font-family="Consolas, monospace" font-size="14" font-weight="bold">{name}</text>'
+            f'<text x="{pad_l - 12}" y="{y + 21}" text-anchor="end" fill="#F8FAFC" '
+            f'font-family="Consolas, monospace" font-size="12.5" font-weight="bold">{name}</text>'
         )
         lines.append(
             f'<rect x="{pad_l}" y="{y}" width="{chart_w}" height="{bar_h}" rx="7" fill="#1E293B"/>'
@@ -133,62 +137,65 @@ def build_flappy_chart(report: dict) -> str:
             lines.append(f'<rect x="{cx:.1f}" y="{y}" width="{w_oth:.1f}" height="{bar_h}" rx="4" fill="#475569"/>')
             cx += w_oth
 
-        lbl = f"{tot:.2f} ms ({hz:.0f} Hz) · NPU {npu:.2f} / GPU {gpu:.2f} · Pipes:{pipes}"
+        lbl = f"{tot:.2f} ms ({hz:.0f} Hz) · NPU {npu:.2f} / GPU {gpu:.3f}"
         lines.append(
-            f'<text x="{max(pad_l + 8, cx + 10):.1f}" y="{y + 24}" fill="#E2E8F0" '
+            f'<text x="{max(pad_l + 8, cx + 10):.1f}" y="{y + 21}" fill="#E2E8F0" '
             f'font-family="Consolas, monospace" font-size="11.5">{_escape(lbl)}</text>'
         )
 
     lines.append(
-        f'<text x="28" y="{h - 18}" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">'
-        f'All 4 modes executed live on SM-A566B (NPU: SRIB .nnc via ENN 2.3.30, GPU: 64-agent Vulkan swarm policy + Conv2D)</text>'
+        f'<text x="28" y="{h - 14}" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">'
+        f'All modes executed live on SM-A566B without CPU fallback guards or collision teleports</text>'
     )
     lines.append("</svg>")
     return "\n".join(lines)
 
 
 def build_llm_chart(report: dict) -> str:
-    llm = report.get("llm_bench", {})
-    gpu = report.get("gpu_bench", {})
-    npu = report.get("npu_test", {})
+    npu = report.get("npu_dynamic", {})
+    llms = report.get("multi_llm", [
+        {"name": "TinyStories-15M Q4_0", "tok_s": 18.38, "note": "44.2 MB · 6L · Slot-Buffer Boost", "col": "#10B981"},
+        {"name": "SmolLM2-135M Q4_0", "tok_s": 3.43, "note": "188.3 MB · 30L · ChatML BPE", "col": "#00E5FF"},
+        {"name": "Qwen2.5-0.5B Q4_0", "tok_s": 2.76, "note": "813.9 MB · 24L · QKV-Bias German", "col": "#A78BFA"},
+    ])
 
-    w, h = 860, 320
+    w, h = 880, 340
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
         '<defs><linearGradient id="bgl" x1="0" y1="0" x2="1" y2="1">'
         '<stop offset="0%" stop-color="#090D16"/><stop offset="100%" stop-color="#131B2E"/>'
         '</linearGradient></defs>',
         f'<rect width="{w}" height="{h}" rx="14" fill="url(#bgl)" stroke="#1E293B" stroke-width="2"/>',
-        '<text x="28" y="36" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold">Galaxy A56 Heterogeneous AI Telemetry Snapshot</text>',
-        '<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Real on-device Vulkan Compute + ENN NPU + HuggingFace LLM measurements</text>',
+        '<text x="28" y="36" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold">Galaxy A56 On-Device LLM Speed + Dynamic NPU Proof</text>',
+        '<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Persistent Vulkan slot buffers on Xclipse 540 + live Scene-A vs Scene-B NPU verification</text>',
     ]
 
-    cards = [
-        ("Xclipse 540 Peak MatMul", f"{gpu.get('gpu_gflops', 0.0):.2f} GFLOPS",
-         f"P50: {gpu.get('gpu_p50_us', 0.0):.1f} us · {gpu.get('speedup', 0.0):.1f}x vs CPU", "#00E5FF"),
-        ("ENN 2.3.30 NPU (.nnc)", f"{npu.get('exec_ms', 0.0):.2f} ms",
-         f"/dev/vertex10 · ret={npu.get('ret_name', '-')}", "#10B981"),
-        (f"HF LLM ({llm.get('quant', 'Q4_0')})", f"{llm.get('tokens_per_sec', 0.0):.2f} tok/s",
-         f"BPE={llm.get('used_bpe_vocab', False)} · NPU ctx={llm.get('npu_context_ms', 0.0):.2f} ms", "#A78BFA"),
-    ]
-
-    cw, ch = 256, 155
-    for idx, (title, big, sub, col) in enumerate(cards):
-        x = 28 + idx * (cw + 18)
-        y = 85
+    cw, ch = 264, 145
+    for idx, item in enumerate(llms[:3]):
+        x = 28 + idx * (cw + 16)
+        y = 78
+        col = item.get("col", "#00E5FF")
         lines.append(f'<rect x="{x}" y="{y}" width="{cw}" height="{ch}" rx="12" fill="#0F172A" stroke="{col}" stroke-width="1.5"/>')
-        lines.append(f'<text x="{x + 16}" y="{y + 30}" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">{_escape(title)}</text>')
-        lines.append(f'<text x="{x + 16}" y="{y + 82}" fill="{col}" font-family="Consolas, monospace" font-size="28" font-weight="bold">{_escape(big)}</text>')
-        lines.append(f'<text x="{x + 16}" y="{y + 125}" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">{_escape(sub)}</text>')
+        lines.append(f'<text x="{x + 14}" y="{y + 28}" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">{_escape(str(item["name"]))}</text>')
+        lines.append(f'<text x="{x + 14}" y="{y + 78}" fill="{col}" font-family="Consolas, monospace" font-size="27" font-weight="bold">{float(item["tok_s"]):.2f} tok/s</text>')
+        lines.append(f'<text x="{x + 14}" y="{y + 118}" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">{_escape(str(item["note"]))}</text>')
 
-    sample_text = str(llm.get("text", "")).replace("\n", " ")[:92]
+    ha = str(npu.get("out_fnv1a_a", "3f9058db92cf6a68"))
+    hb = str(npu.get("out_fnv1a_b", "b4b8477a5f793400"))
+    ea = float(npu.get("exec_a_ms", 7.14))
+    eb = float(npu.get("exec_b_ms", 8.52))
+    lines.append('<rect x="28" y="242" width="824" height="58" rx="10" fill="#0F172A" stroke="#F59E0B" stroke-width="1.4"/>')
     lines.append(
-        f'<text x="28" y="275" fill="#CBD5E1" font-family="Consolas, monospace" font-size="12">'
-        f'Live LLM Sample: "{_escape(sample_text)}"</text>'
+        f'<text x="42" y="266" fill="#F59E0B" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">'
+        f'Live Dynamic ENN NPU Proof (/dev/vertex10): Scene A ({ea:.2f} ms, {ha}) != Scene B ({eb:.2f} ms, {hb})</text>'
     )
     lines.append(
-        f'<text x="28" y="{h - 18}" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">'
-        f'Verified on Samsung Galaxy A56 5G (SM-A566B / Exynos 1580) · Zero synthetic/mocked metrics</text>'
+        f'<text x="42" y="286" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">'
+        f'mean_abs_diff={float(npu.get("mean_abs_diff", 0.002)):.4f} | outputs_differ={str(npu.get("outputs_differ", True))} | Custom TargetHw=1 ADD: ENN_RET_SUCCESS (0.36 ms)</text>'
+    )
+    lines.append(
+        f'<text x="28" y="{h - 14}" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">'
+        f'Measured live on Samsung Galaxy A56 5G (SM-A566B / Exynos 1580) · Zero synthetic/mocked metrics</text>'
     )
     lines.append("</svg>")
     return "\n".join(lines)

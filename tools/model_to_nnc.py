@@ -593,7 +593,7 @@ def build_minimal_add_flatbuffer(
     schema_version: int = 211,
     target_hw: int | None = 2,
 ) -> bytes:
-    """Synthesize a valid TFLite / ENNC FlatBuffer ADD model with optional ENN TargetHw (slot 9)."""
+    """Synthesize a valid TFLite / ENNC v211 FlatBuffer ADD model matching A56 NncParseStrategy."""
     b = MiniFlatBufferBuilder()
 
     # Buffers: 0 (sentinel), 1 (x), 2 (y), 3 (output)
@@ -611,37 +611,46 @@ def build_minimal_add_flatbuffer(
     )
     op_codes_vec = b.create_offset_vector([op_code_0])
 
-    # Tensors: x[1,4], y[1,4], output[1,4] (FLOAT32 = 0)
+    # Tensors: 4D NCHW [1, 1, 1, 4] + ENNC v211 extension fields (prev/next operators, s5=1, s11=100)
+    empty_ops = b.create_i32_vector([])
+    next_op0 = b.create_i32_vector([0])
     tensor_specs = [
-        ("input_x", [1, 4], 1),
-        ("input_y", [1, 4], 2),
-        ("output_add", [1, 4], 3),
+        ("input_x", [1, 1, 1, 4], 1, None, next_op0),
+        ("input_y", [1, 1, 1, 4], 2, None, next_op0),
+        ("output_add", [1, 1, 1, 4], 3, next_op0, empty_ops),
     ]
     tensor_offs = []
-    for name, shape, buf_idx in tensor_specs:
+    for name, shape, buf_idx, prev_v, next_v in tensor_specs:
         shape_vec = b.create_i32_vector(shape)
         name_str = b.create_string(name)
-        tensor_offs.append(
-            b.create_table(
-                4,
-                {
-                    0: ("off", shape_vec),  # shape
-                    1: ("u8", 0),           # type = FLOAT32 (0)
-                    2: ("u32", buf_idx),    # buffer
-                    3: ("off", name_str),   # name
-                },
-            )
-        )
+        tfields: dict[int, tuple[str, int]] = {
+            0: ("off", shape_vec),  # shape
+            1: ("u8", 0),           # type = FLOAT32 (0)
+            2: ("u32", buf_idx),    # buffer
+            3: ("off", name_str),   # name
+        }
+        if target_hw is not None:
+            tfields[5] = ("u8", 1)
+            if prev_v is not None:
+                tfields[8] = ("off", prev_v)
+            if next_v is not None:
+                tfields[9] = ("off", next_v)
+            tfields[11] = ("u8", 100)
+        tensor_offs.append(b.create_table(12 if target_hw is not None else 4, tfields))
     tensors_vec = b.create_offset_vector(tensor_offs)
 
-    # Operator[0]: ADD(inputs=[0, 1], outputs=[2]) + ENN TargetHw slot 9 (if requested)
+    # AddOptions table (builtin_options_type = 1 = AddOptions, slot 0 = fused_activation_function NONE(0))
+    add_opts = b.create_table(2, {0: ("i8", 0)})
+
+    # Operator[0]: ADD(inputs=[0, 1], outputs=[2]) + builtin_options + ENN TargetHw slot 9
     op_in_vec = b.create_i32_vector([0, 1])
     op_out_vec = b.create_i32_vector([2])
     op_fields: dict[int, tuple[str, int]] = {
-        0: ("u32", 0),
+        0: ("u32", 0),        # opcode_index
         1: ("off", op_in_vec),
         2: ("off", op_out_vec),
-        3: ("u8", 0),
+        3: ("u8", 1),         # builtin_options_type = AddOptions (1)
+        4: ("off", add_opts), # mandatory non-null builtin_options table
     }
     if target_hw is not None:
         op_fields[9] = ("i8", int(target_hw))
@@ -664,7 +673,7 @@ def build_minimal_add_flatbuffer(
     )
     sgs_vec = b.create_offset_vector([sg_0])
 
-    desc_str = b.create_string("ExyNova synthesized ADD FlatBuffer (ENNC v211)")
+    desc_str = b.create_string(f"ExyNova ENNC v{schema_version} ADD TargetHw={target_hw}")
     model_root = b.create_table(
         7,
         {
