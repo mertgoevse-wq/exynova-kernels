@@ -14,7 +14,7 @@ layout(set = 0, binding = 2) writeonly buffer BufY { float y_data[]; };
 shared float sdata[64];
 
 void main() {
-    uint m = gl_WorkGroupID.x;
+    uint m = gl_WorkGroupID.y * 32768u + gl_WorkGroupID.x;
     if (m >= pc.M || pc.K == 0u) {
         return;
     }

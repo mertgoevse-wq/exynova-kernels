@@ -216,6 +216,7 @@ private:
     std::unordered_map<std::string, uint32_t> piece_to_id_;
 
     std::vector<float> token_embedding_;
+    std::vector<uint16_t> token_embedding_f16_;
     std::vector<TransformerLayerWeights> layers_;
     std::vector<float> final_norm_;
     WeightMatrix lm_head_;

@@ -547,28 +547,27 @@ struct VulkanComputeBackend::Impl {
                     destroy_buffer(it->second);
                     weight_cache.erase(it);
                 }
-                constexpr VkDeviceSize kMaxCacheBytes = 384ULL * 1024ULL * 1024ULL;
-                if (cached_bytes + bindings[i].size_bytes > kMaxCacheBytes) {
-                    clear_weight_cache();
+                constexpr VkDeviceSize kMaxCacheBytes = 960ULL * 1024ULL * 1024ULL;
+                if (cached_bytes + bindings[i].size_bytes <= kMaxCacheBytes) {
+                    if (!create_buffer(bindings[i].size_bytes, gpu_bufs[i], err)) {
+                        cleanup_bufs();
+                        return false;
+                    }
+                    std::memcpy(gpu_bufs[i].mapped, bindings[i].upload_data, static_cast<size_t>(bindings[i].size_bytes));
+                    if (!gpu_bufs[i].coherent) {
+                        VkMappedMemoryRange range{};
+                        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                        range.memory = gpu_bufs[i].memory;
+                        range.offset = 0;
+                        range.size = VK_WHOLE_SIZE;
+                        vkFlushMappedMemoryRanges(device, 1, &range);
+                    }
+                    weight_cache.emplace(bindings[i].upload_data, gpu_bufs[i]);
+                    cached_bytes += bindings[i].size_bytes;
+                    keep_alive[i] = true;
+                    continue;
                 }
-
-                if (!create_buffer(bindings[i].size_bytes, gpu_bufs[i], err)) {
-                    cleanup_bufs();
-                    return false;
-                }
-                std::memcpy(gpu_bufs[i].mapped, bindings[i].upload_data, static_cast<size_t>(bindings[i].size_bytes));
-                if (!gpu_bufs[i].coherent) {
-                    VkMappedMemoryRange range{};
-                    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-                    range.memory = gpu_bufs[i].memory;
-                    range.offset = 0;
-                    range.size = VK_WHOLE_SIZE;
-                    vkFlushMappedMemoryRanges(device, 1, &range);
-                }
-                weight_cache.emplace(bindings[i].upload_data, gpu_bufs[i]);
-                cached_bytes += bindings[i].size_bytes;
-                keep_alive[i] = true;
-                continue;
+                // Exceeded 960 MiB VRAM budget: stream via persistent slot_buffers[i] without evicting active cache
             }
 
             if (i < 4u) {
@@ -654,7 +653,7 @@ struct VulkanComputeBackend::Impl {
             return false;
         }
 
-        if (query_pool != VK_NULL_HANDLE) {
+        if (gpu_us && query_pool != VK_NULL_HANDLE) {
             vkCmdResetQueryPool(cmd_buf, query_pool, 0, 2);
             vkCmdWriteTimestamp(cmd_buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 0);
         }
@@ -668,7 +667,7 @@ struct VulkanComputeBackend::Impl {
         }
         vkCmdDispatch(cmd_buf, gx, gy, gz);
 
-        if (query_pool != VK_NULL_HANDLE) {
+        if (gpu_us && query_pool != VK_NULL_HANDLE) {
             vkCmdWriteTimestamp(cmd_buf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1);
         }
 
@@ -1169,8 +1168,10 @@ bool VulkanComputeBackend::matvec_q8_0(const int32_t* packed_i8, const float* sc
         {x, nullptr, bytes_x, false},
         {nullptr, y, bytes_y, false},
     };
+    const uint32_t gx = std::min(M, 32768u);
+    const uint32_t gy = (M + 32767u) / 32768u;
     return impl_->dispatch_kernel(KernelId::MatVecQ8_0, bindings, 4,
-                                  pc, sizeof(pc), M, 1, 1, gpu_us, err);
+                                  pc, sizeof(pc), gx, gy, 1, gpu_us, err);
 }
 
 bool VulkanComputeBackend::matvec_q4_0(const uint32_t* packed_q4, const float* scales,
@@ -1201,8 +1202,10 @@ bool VulkanComputeBackend::matvec_q4_0(const uint32_t* packed_q4, const float* s
         {x, nullptr, bytes_x, false},
         {nullptr, y, bytes_y, false},
     };
+    const uint32_t gx = std::min(M, 32768u);
+    const uint32_t gy = (M + 32767u) / 32768u;
     return impl_->dispatch_kernel(KernelId::MatVecQ4_0, bindings, 4,
-                                  pc, sizeof(pc), M, 1, 1, gpu_us, err);
+                                  pc, sizeof(pc), gx, gy, 1, gpu_us, err);
 }
 
 bool VulkanComputeBackend::matvec_f16(const uint32_t* packed_f16x2,
@@ -1231,8 +1234,10 @@ bool VulkanComputeBackend::matvec_f16(const uint32_t* packed_f16x2,
         {x, nullptr, bytes_x, false},
         {nullptr, y, bytes_y, false},
     };
+    const uint32_t gx = std::min(M, 32768u);
+    const uint32_t gy = (M + 32767u) / 32768u;
     return impl_->dispatch_kernel(KernelId::MatVecF16, bindings, 3,
-                                  pc, sizeof(pc), M, 1, 1, gpu_us, err);
+                                  pc, sizeof(pc), gx, gy, 1, gpu_us, err);
 }
 
 bool VulkanComputeBackend::conv2d_nchw(const float* input, const float* weight, const float* bias, float* out,

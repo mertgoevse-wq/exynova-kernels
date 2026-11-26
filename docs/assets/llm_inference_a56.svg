@@ -8,15 +8,15 @@
 <text x="42" y="156" fill="#10B981" font-family="Consolas, monospace" font-size="27" font-weight="bold">18.38 tok/s</text>
 <text x="42" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">44.2 MB · 6L · Slot-Buffer Boost</text>
 <rect x="308" y="78" width="264" height="145" rx="12" fill="#0F172A" stroke="#00E5FF" stroke-width="1.5"/>
-<text x="322" y="106" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">SmolLM2-135M Q4_0</text>
-<text x="322" y="156" fill="#00E5FF" font-family="Consolas, monospace" font-size="27" font-weight="bold">3.43 tok/s</text>
-<text x="322" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">188.3 MB · 30L · ChatML BPE</text>
+<text x="322" y="106" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">Qwen2.5-0.5B Q8_0</text>
+<text x="322" y="156" fill="#00E5FF" font-family="Consolas, monospace" font-size="27" font-weight="bold">2.60 tok/s</text>
+<text x="322" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">789.9 MB · 24L · 2D-Dispatch Fix</text>
 <rect x="588" y="78" width="264" height="145" rx="12" fill="#0F172A" stroke="#A78BFA" stroke-width="1.5"/>
-<text x="602" y="106" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">Qwen2.5-0.5B Q4_0</text>
-<text x="602" y="156" fill="#A78BFA" font-family="Consolas, monospace" font-size="27" font-weight="bold">2.76 tok/s</text>
-<text x="602" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">813.9 MB · 24L · QKV-Bias German</text>
+<text x="602" y="106" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">Qwen2.5-1.5B Q4_0</text>
+<text x="602" y="156" fill="#A78BFA" font-family="Consolas, monospace" font-size="27" font-weight="bold">1.56 tok/s</text>
+<text x="602" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">1.48 GB · 28L · NPU+GPU Hybrid APK</text>
 <rect x="28" y="242" width="824" height="58" rx="10" fill="#0F172A" stroke="#F59E0B" stroke-width="1.4"/>
-<text x="42" y="266" fill="#F59E0B" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">Live Dynamic ENN NPU Proof (/dev/vertex10): Scene A (7.14 ms, 3f9058db92cf6a68) != Scene B (8.52 ms, b4b8477a5f793400)</text>
-<text x="42" y="286" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">mean_abs_diff=0.0020 | outputs_differ=True | Custom TargetHw=1 ADD: ENN_RET_SUCCESS (0.36 ms)</text>
+<text x="42" y="266" fill="#F59E0B" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">Live Dynamic ENN NPU Proof (/dev/vertex10): Scene A (12.75 ms, 3f9058db92cf6a68) != Scene B (9.81 ms, b4b8477a5f793400)</text>
+<text x="42" y="286" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">mean_abs_diff=0.0020 | outputs_differ=True | 5/5 Sister/Rose .nnc &amp; ENNC v211 ADD OK</text>
 <text x="28" y="326" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">Measured live on Samsung Galaxy A56 5G (SM-A566B / Exynos 1580) · Zero synthetic/mocked metrics</text>
 </svg>

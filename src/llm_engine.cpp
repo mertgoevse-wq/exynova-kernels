@@ -445,7 +445,9 @@ LlmEngine::~LlmEngine() {
 }
 
 size_t LlmEngine::model_bytes() const {
-    size_t total = token_embedding_.size() * sizeof(float) + final_norm_.size() * sizeof(float) +
+    size_t total = token_embedding_.size() * sizeof(float) +
+                   token_embedding_f16_.size() * sizeof(uint16_t) +
+                   final_norm_.size() * sizeof(float) +
                    lm_head_.storage_bytes();
     for (const auto& lw : layers_) {
         total += lw.attn_norm.size() * sizeof(float) + lw.ffn_norm.size() * sizeof(float);
@@ -530,6 +532,7 @@ bool LlmEngine::init_demo_tiny_lm(const LlmConfig& cfg,
     const float inv_sqrt_hid = 1.0f / std::sqrt(static_cast<float>(cfg_.hidden_dim));
 
     uint32_t rng = 0x13572468u;
+    token_embedding_f16_.clear();
     token_embedding_ = make_seeded_weights(
         static_cast<size_t>(cfg_.vocab_size) * cfg_.dim, rng, 0.25f);
 
@@ -670,14 +673,20 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
             return false;
         }
     }
+    bool fp16_emb = false;
+    uint32_t head_quant = quant_type;
     if (version >= 3) {
-        uint32_t qkv_bias_flag = 0;
-        if (!read_pod(ifs, qkv_bias_flag) ||
+        uint32_t flags = 0;
+        if (!read_pod(ifs, flags) ||
             !read_pod(ifs, cfg.alt_eos_token_id)) {
             set_err(err, "Failed to read .exyllm v3 extended header");
             return false;
         }
-        cfg.has_qkv_bias = (qkv_bias_flag != 0u);
+        cfg.has_qkv_bias = (flags & 1u) != 0u;
+        fp16_emb = (flags & 2u) != 0u;
+        if ((flags & 4u) != 0u) {
+            head_quant = 1u;  // Mixed Q8_0 output head for cleaner logits
+        }
     }
 
     if (!validate_config(cfg, err)) {
@@ -692,7 +701,17 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
     const uint32_t kv_dim = cfg.n_kv_heads * head_dim;
 
     std::vector<float> emb;
-    if (!read_f32_vec(ifs, emb, static_cast<size_t>(cfg.vocab_size) * cfg.dim)) {
+    std::vector<uint16_t> emb_f16;
+    const size_t emb_elems = static_cast<size_t>(cfg.vocab_size) * cfg.dim;
+    if (fp16_emb) {
+        emb_f16.resize(emb_elems);
+        ifs.read(reinterpret_cast<char*>(emb_f16.data()),
+                 static_cast<std::streamsize>(emb_elems * sizeof(uint16_t)));
+        if (!ifs) {
+            set_err(err, "Failed to read FP16 token embeddings from .exyllm file");
+            return false;
+        }
+    } else if (!read_f32_vec(ifs, emb, emb_elems)) {
         set_err(err, "Failed to read token embeddings from .exyllm file");
         return false;
     }
@@ -729,7 +748,7 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
         return false;
     }
     WeightMatrix head;
-    if (!read_matrix(ifs, quant_type, cfg.vocab_size, cfg.dim, head, err)) {
+    if (!read_matrix(ifs, head_quant, cfg.vocab_size, cfg.dim, head, err)) {
         return false;
     }
 
@@ -745,6 +764,7 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
     piece_to_id_.clear();
     quant_type_ = static_cast<QuantType>(quant_type);
     token_embedding_ = std::move(emb);
+    token_embedding_f16_ = std::move(emb_f16);
     layers_ = std::move(layers);
     final_norm_ = std::move(fnorm);
     lm_head_ = std::move(head);
@@ -784,27 +804,7 @@ std::vector<uint32_t> LlmEngine::encode_prompt(const std::string& prompt) const 
         return tokens;
     }
 
-    auto bpe_encode_chunk = [&](const std::string& chunk) {
-        std::string norm;
-        if (tok_style_ == 0) {
-            norm.reserve(chunk.size() * 2 + 4);
-            if (piece_to_id_.find("\xE2\x96\x81") != piece_to_id_.end()) {
-                norm += "\xE2\x96\x81";
-            }
-            for (unsigned char c : chunk) {
-                if (c == ' ') norm += "\xE2\x96\x81";
-                else norm.push_back(static_cast<char>(c));
-            }
-        } else if (tok_style_ == 2) {
-            norm = chunk;
-        } else {
-            for (unsigned char c : chunk) {
-                if (c == ' ') norm += "\xC4\xA0";
-                else if (c == '\n') norm += "\xC4\x8A";
-                else norm.push_back(static_cast<char>(c));
-            }
-        }
-
+    auto run_bpe_piece = [&](const std::string& norm) {
         std::vector<uint32_t> seq;
         size_t i = 0;
         while (i < norm.size()) {
@@ -863,6 +863,64 @@ std::vector<uint32_t> LlmEngine::encode_prompt(const std::string& prompt) const 
         for (uint32_t id : seq) {
             if (id < cfg_.vocab_size) tokens.push_back(id);
         }
+    };
+
+    auto bpe_encode_chunk = [&](const std::string& chunk) {
+        if (tok_style_ == 2) {
+            auto is_letter = [](unsigned char b) -> bool {
+                return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b >= 0x80u;
+            };
+            size_t ci = 0;
+            const size_t n = chunk.size();
+            while (ci < n) {
+                const unsigned char c = static_cast<unsigned char>(chunk[ci]);
+                if (c == '\r' || c == '\n') {
+                    size_t end = ci + 1;
+                    while (end < n && (chunk[end] == '\r' || chunk[end] == '\n')) ++end;
+                    run_bpe_piece(chunk.substr(ci, end - ci));
+                    ci = end;
+                } else if (is_letter(c) || (c == ' ' && ci + 1 < n && is_letter(static_cast<unsigned char>(chunk[ci + 1])))) {
+                    size_t end = ci + 1;
+                    while (end < n && is_letter(static_cast<unsigned char>(chunk[end]))) ++end;
+                    run_bpe_piece(chunk.substr(ci, end - ci));
+                    ci = end;
+                } else if (c >= '0' && c <= '9') {
+                    run_bpe_piece(chunk.substr(ci, 1));
+                    ++ci;
+                } else if (c == ' ' || c == '\t') {
+                    size_t end = ci + 1;
+                    while (end < n && (chunk[end] == ' ' || chunk[end] == '\t')) {
+                        if (end + 1 < n && is_letter(static_cast<unsigned char>(chunk[end + 1]))) break;
+                        ++end;
+                    }
+                    run_bpe_piece(chunk.substr(ci, end - ci));
+                    ci = end;
+                } else {
+                    run_bpe_piece(chunk.substr(ci, 1));
+                    ++ci;
+                }
+            }
+            return;
+        }
+
+        std::string norm;
+        if (tok_style_ == 0) {
+            norm.reserve(chunk.size() * 2 + 4);
+            if (piece_to_id_.find("\xE2\x96\x81") != piece_to_id_.end()) {
+                norm += "\xE2\x96\x81";
+            }
+            for (unsigned char c : chunk) {
+                if (c == ' ') norm += "\xE2\x96\x81";
+                else norm.push_back(static_cast<char>(c));
+            }
+        } else {
+            for (unsigned char c : chunk) {
+                if (c == ' ') norm += "\xC4\xA0";
+                else if (c == '\n') norm += "\xC4\x8A";
+                else norm.push_back(static_cast<char>(c));
+            }
+        }
+        run_bpe_piece(norm);
     };
 
     // Match known atomic special tokens (<|im_start|>, <|im_end|>, <|endoftext|>, <s>, </s>)
@@ -1150,9 +1208,16 @@ bool LlmEngine::forward_token(uint32_t token_id, uint32_t pos,
     const float inv_sqrt_hd = 1.0f / std::sqrt(static_cast<float>(head_dim));
     const uint32_t seq_len = pos + 1u;
 
-    std::memcpy(x_.data(),
-                token_embedding_.data() + static_cast<size_t>(token_id) * dim,
-                static_cast<size_t>(dim) * sizeof(float));
+    if (!token_embedding_f16_.empty()) {
+        const size_t base = static_cast<size_t>(token_id) * dim;
+        for (uint32_t i = 0; i < dim; ++i) {
+            x_[i] = float16_to_float32(token_embedding_f16_[base + i]);
+        }
+    } else {
+        std::memcpy(x_.data(),
+                    token_embedding_.data() + static_cast<size_t>(token_id) * dim,
+                    static_cast<size_t>(dim) * sizeof(float));
+    }
 
     for (uint32_t l = 0; l < cfg_.n_layers; ++l) {
         const auto& lw = layers_[l];
@@ -1340,12 +1405,24 @@ GenerationResult LlmEngine::generate(const std::string& prompt,
     const uint32_t to_gen = std::min(max_new_tokens, avail);
 
     const auto t_decode_start = std::chrono::steady_clock::now();
+    std::vector<uint32_t> recent_tokens;
+    recent_tokens.reserve(to_gen);
     for (uint32_t step = 0; step < to_gen; ++step) {
+        if (!logits.empty()) {
+            const size_t hist_start = recent_tokens.size() > 48u ? recent_tokens.size() - 48u : 0u;
+            for (size_t hi = hist_start; hi < recent_tokens.size(); ++hi) {
+                const uint32_t rt = recent_tokens[hi];
+                if (rt < logits.size()) {
+                    logits[rt] = (logits[rt] > 0.0f) ? (logits[rt] / 1.12f) : (logits[rt] * 1.12f);
+                }
+            }
+        }
         const uint32_t next_tok = sample_token(logits, temperature, rng_state);
         if (has_vocab_ && (next_tok == cfg_.eos_token_id ||
                            (cfg_.alt_eos_token_id != 0u && next_tok == cfg_.alt_eos_token_id))) {
             break;
         }
+        recent_tokens.push_back(next_tok);
         const std::string piece = decode_token(next_tok);
         if (has_vocab_ && (piece == "<|im_end|>" || piece == "<|endoftext|>" || piece == "</s>")) {
             break;

@@ -784,6 +784,85 @@ def build_mlp_ennc_flatbuffer(
     return b.finish(root, identifier=b"ENNC")
 
 
+def build_fc_ennc_flatbuffer(
+    in_dim: int = 8,
+    out_dim: int = 8,
+    target_hw: int = 1,
+    schema_version: int = 211,
+) -> bytes:
+    """Synthesize a valid ENNC v211 FULLY_CONNECTED (op 9, FullyConnectedOptions bopt=8) model."""
+    b = MiniFlatBufferBuilder()
+    w_bytes = struct.pack(f"<{out_dim * in_dim}f", *([0.125] * (out_dim * in_dim)))
+    b_bytes = struct.pack(f"<{out_dim}f", *([0.0] * out_dim))
+    w_vec = b.create_u8_vector(w_bytes)
+    b_vec = b.create_u8_vector(b_bytes)
+    buf_offs = [
+        b.create_table(1, {}),
+        b.create_table(1, {}),
+        b.create_table(1, {0: ("off", w_vec)}),
+        b.create_table(1, {0: ("off", b_vec)}),
+        b.create_table(1, {}),
+    ]
+    buffers_vec = b.create_offset_vector(buf_offs)
+
+    op_code = b.create_table(
+        4,
+        {0: ("i8", 9), 2: ("i32", 1), 3: ("i32", 9)},  # FULLY_CONNECTED = 9
+    )
+    op_codes_vec = b.create_offset_vector([op_code])
+
+    empty_ops = b.create_i32_vector([])
+    next_op0 = b.create_i32_vector([0])
+    tensor_specs = [
+        ("input_x", [1, 1, 1, in_dim], 1, None, next_op0),
+        ("weights", [out_dim, in_dim, 1, 1], 2, None, next_op0),
+        ("bias", [1, 1, 1, out_dim], 3, None, next_op0),
+        ("output_fc", [1, 1, 1, out_dim], 4, next_op0, empty_ops),
+    ]
+    tensor_offs = []
+    for name, shape, buf_idx, prev_v, next_v in tensor_specs:
+        shape_vec = b.create_i32_vector(shape)
+        name_str = b.create_string(name)
+        tf: dict[int, tuple[str, int]] = {
+            0: ("off", shape_vec),
+            1: ("u8", 0),
+            2: ("u32", buf_idx),
+            3: ("off", name_str),
+            5: ("u8", 1),
+            11: ("u8", 100),
+        }
+        if prev_v is not None:
+            tf[8] = ("off", prev_v)
+        if next_v is not None:
+            tf[9] = ("off", next_v)
+        tensor_offs.append(b.create_table(12, tf))
+    tensors_vec = b.create_offset_vector(tensor_offs)
+
+    fc_opts = b.create_table(5, {0: ("i8", 0)})  # fused_activation_function=NONE(0)
+    op_in = b.create_i32_vector([0, 1, 2])
+    op_out = b.create_i32_vector([3])
+    op_table = b.create_table(
+        10,
+        {
+            0: ("u32", 0),
+            1: ("off", op_in),
+            2: ("off", op_out),
+            3: ("u8", 8),  # BuiltinOptions.FullyConnectedOptions = 8
+            4: ("off", fc_opts),
+            9: ("i32", target_hw),
+        },
+    )
+    ops_vec = b.create_offset_vector([op_table])
+    sg_in = b.create_i32_vector([0])
+    sg_out = b.create_i32_vector([3])
+    sg_name = b.create_string("main")
+    sg = b.create_table(5, {0: ("off", tensors_vec), 1: ("off", sg_in), 2: ("off", sg_out), 3: ("off", ops_vec), 4: ("off", sg_name)})
+    sgs_vec = b.create_offset_vector([sg])
+    desc_str = b.create_string(f"ExyNova ENNC v{schema_version} FC TargetHw={target_hw}")
+    root = b.create_table(7, {0: ("u32", schema_version), 1: ("off", op_codes_vec), 2: ("off", sgs_vec), 3: ("off", desc_str), 4: ("off", buffers_vec)})
+    return b.finish(root, identifier=b"ENNC")
+
+
 def convert_tflite_to_nnc(input_path: Path, output_path: Path, quiet: bool = False) -> dict[str, Any]:
     """Validate input .tflite/.nnc FlatBuffer, rewrite 'TFL3' -> 'ENNC', and write output."""
     raw = input_path.read_bytes()
@@ -838,6 +917,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_add_tfl.add_argument("output", type=Path, help="Output .tflite file path.")
 
+    p_fc_nnc = sub.add_parser(
+        "build-fc-nnc",
+        help="Synthesize an ENNC v211 FULLY_CONNECTED model with FullyConnectedOptions.",
+    )
+    p_fc_nnc.add_argument("output", type=Path, help="Output .nnc file path.")
+    p_fc_nnc.add_argument("--dim", type=int, default=8)
+    p_fc_nnc.add_argument("--target-hw", type=int, default=1, choices=[0, 1, 2, 3])
+
     args = parser.parse_args(argv)
 
     if args.command == "tflite2nnc":
@@ -882,6 +969,15 @@ def main(argv: list[str] | None = None) -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(data)
         print(f"Synthesized minimal TFL3 ADD model: {args.output} ({len(data):,} bytes)")
+        return 0
+
+    if args.command == "build-fc-nnc":
+        data = build_fc_ennc_flatbuffer(in_dim=args.dim, out_dim=args.dim, target_hw=args.target_hw)
+        info = validate_and_inspect_model(data)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_bytes(data)
+        print_compatibility_report(info, "ENNC")
+        print(f"\n  Synthesized ENNC FULLY_CONNECTED model (dim={args.dim}, TargetHw={args.target_hw}): {args.output} ({len(data):,} bytes)")
         return 0
 
     return 1

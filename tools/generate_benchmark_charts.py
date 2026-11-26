@@ -155,8 +155,8 @@ def build_llm_chart(report: dict) -> str:
     npu = report.get("npu_dynamic", {})
     llms = report.get("multi_llm", [
         {"name": "TinyStories-15M Q4_0", "tok_s": 18.38, "note": "44.2 MB · 6L · Slot-Buffer Boost", "col": "#10B981"},
-        {"name": "SmolLM2-135M Q4_0", "tok_s": 3.43, "note": "188.3 MB · 30L · ChatML BPE", "col": "#00E5FF"},
-        {"name": "Qwen2.5-0.5B Q4_0", "tok_s": 2.76, "note": "813.9 MB · 24L · QKV-Bias German", "col": "#A78BFA"},
+        {"name": "Qwen2.5-0.5B Q8_0", "tok_s": 2.60, "note": "789.9 MB · 24L · 2D-Dispatch Fix", "col": "#00E5FF"},
+        {"name": "Qwen2.5-1.5B Q4_0", "tok_s": 1.56, "note": "1.48 GB · 28L · NPU+GPU Hybrid APK", "col": "#A78BFA"},
     ])
 
     w, h = 880, 340
@@ -191,7 +191,7 @@ def build_llm_chart(report: dict) -> str:
     )
     lines.append(
         f'<text x="42" y="286" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">'
-        f'mean_abs_diff={float(npu.get("mean_abs_diff", 0.002)):.4f} | outputs_differ={str(npu.get("outputs_differ", True))} | Custom TargetHw=1 ADD: ENN_RET_SUCCESS (0.36 ms)</text>'
+        f'mean_abs_diff={float(npu.get("mean_abs_diff", 0.002)):.4f} | outputs_differ={str(npu.get("outputs_differ", True))} | 5/5 Sister/Rose .nnc &amp; ENNC v211 ADD OK</text>'
     )
     lines.append(
         f'<text x="28" y="{h - 14}" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">'

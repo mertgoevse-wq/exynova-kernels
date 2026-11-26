@@ -129,7 +129,7 @@ def write_exyllm_v3_header(
             rope_mode,
             bos_id,
             eos_id,
-            has_qkv_bias,
+            has_qkv_bias,  # bitmask: 1=qkv_bias, 2=fp16_emb, 4=q8_lm_head
             alt_eos_id,
         )
     )
@@ -356,13 +356,16 @@ def export_hf_causal_lm(
         for q in quants:
             exy_path = out_dir / f"{out_stem}_{q}.exyllm"
             tok_out = Path(str(exy_path) + ".tok")
+            # Compact v3 bitmask: bit0=qkv_bias, bit1=fp16_emb (50% smaller RAM), bit2=q8_0 lm_head when q==q4_0
+            flags = has_qkv_bias | 2 | (4 if q == "q4_0" else 0)
+            head_q = "q8_0" if q == "q4_0" else q
             with exy_path.open("wb") as f:
                 write_exyllm_v3_header(
                     f, vocab_size, dim, hidden_dim, n_layers, n_heads, n_kv_heads,
                     512, rms_eps, rope_theta, QUANT_IDS[q], 1, bos_id, eos_id,
-                    has_qkv_bias, alt_eos,
+                    flags, alt_eos,
                 )
-                f.write(emb.astype(np.float32).tobytes())
+                f.write(emb.astype(np.float16).tobytes())
                 for l in range(n_layers):
                     pfx = f"model.layers.{l}"
                     f.write(get_tensor_f32(f"{pfx}.input_layernorm.weight").tobytes())
@@ -379,7 +382,7 @@ def export_hf_causal_lm(
                     write_matrix_exyllm(f, get_tensor_f32(f"{pfx}.mlp.down_proj.weight"), q)
                     write_matrix_exyllm(f, get_tensor_f32(f"{pfx}.mlp.up_proj.weight"), q)
                 f.write(rms_final.astype(np.float32).tobytes())
-                write_matrix_exyllm(f, wcls, q)
+                write_matrix_exyllm(f, wcls, head_q)
 
             convert_hf_tokenizer_json_to_etok(tok_json_path, tok_out, vocab_size, bos_id, eos_id)
             print(f"Wrote {exy_path} ({exy_path.stat().st_size / (1024*1024):.2f} MiB) + {tok_out.name}")
@@ -389,7 +392,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Download open HuggingFace LLMs and convert to .exyllm v3 + .tok")
     ap.add_argument(
         "--preset",
-        choices=["tinystories-15m", "tinystories-42m", "smollm2-135m", "qwen2.5-0.5b"],
+        choices=["tinystories-15m", "tinystories-42m", "smollm2-135m", "qwen2.5-0.5b", "qwen2.5-1.5b"],
         default="smollm2-135m",
     )
     ap.add_argument(
@@ -410,6 +413,9 @@ def main() -> int:
                             args.quant, args.out_dir, 1, 2, 0)
     elif args.preset == "qwen2.5-0.5b":
         export_hf_causal_lm("Qwen/Qwen2.5-0.5B-Instruct", "qwen25_05b",
+                            args.quant, args.out_dir, 151643, 151645, 151643)
+    elif args.preset == "qwen2.5-1.5b":
+        export_hf_causal_lm("Qwen/Qwen2.5-1.5B-Instruct", "qwen25_15b",
                             args.quant, args.out_dir, 151643, 151645, 151643)
     return 0
 

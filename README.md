@@ -3,9 +3,9 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](CMakeLists.txt)
 [![Android NDK](https://img.shields.io/badge/Android-ARM64_NDK-3DDC84.svg)](CMakeLists.txt)
-[![Target SoC](https://img.shields.io/badge/Samsung-Exynos_1580_%2F_Xclipse_540-1428A0.svg)](#verified-galaxy-a56-5g-hardware-benchmarks)
+[![Target SoC](https://img.shields.io/badge/Samsung-Exynos_1580_%2F_Xclipse_540-1428A0.svg)](#live-benchmarks-on-samsung-galaxy-a56-5g-sm-a566b)
 
-**Open-source C++17 Vulkan RDNA compute kernels (`FP32`, `FP16`, `Q8_0`, `Q4_0`), Samsung ENN NPU runtime loader, multi-quant LLM engine (`BPE` + `KV-Cache`), 4-mode Flappy Bird AI example, and Android Game NDK SDK for Samsung Exynos 1580 (`S5E8855` / Galaxy A56 5G / Xclipse 540 GPU).**
+**Open-source C++17 Vulkan RDNA compute kernels (`FP32`, `FP16`, `Q8_0`, `Q4_0` with 2D `M > 65535` vocab dispatch), Samsung ENN NPU runtime loader + Sister-`.nnc` Zoo, multi-quant LLM engine (`Qwen2.5-1.5B` + Word-BPE + `.exyllm v3`), 4-mode Flappy Bird AI example, and Android Game NDK SDK for Samsung Exynos 1580 (`S5E8855` / Galaxy A56 5G / Xclipse 540 GPU).**
 
 > *Evidence-driven hardware engineering — zero simulated results, zero proprietary blobs.*
 
@@ -18,27 +18,26 @@
 
 | Game / Mode | Hardware Path | Mean Frame Latency | Max AI Rate | NPU Stage | GPU Stage |
 |---|---|---|---|---|---|
-| **Flappy · `NPU`** | Samsung ENN `2.3.30` (`/dev/vertex10` spatial `.nnc`) | **`6.246 ms`** | `160.1 Hz` | `5.945 ms` | `0.000 ms` |
-| **Flappy · `NPU + GPU`** | ENN `.nnc` features → Xclipse 540 64-agent Vulkan MLP | **`8.953 ms`** | `111.7 Hz` | `6.187 ms` | `0.024 ms` |
-| **Flappy · `GPU`** | Xclipse 540 `Conv2D` sensor + 64-agent Vulkan MLP | **`2.477 ms`** | **`403.7 Hz`** | `0.000 ms` | `0.034 ms` |
-| **Flappy · `GPU + NPU`** | Xclipse 540 64-agent MLP → ENN `.nnc` hazard check | **`9.239 ms`** | `108.2 Hz` | `6.360 ms` | `0.024 ms` |
-| **Neon Swarm · `GPU`** | Xclipse 540 `128`-agent Vulkan MLP (`128x8 → 16 → 2`) | **`1.944 ms`** | **`514.4 Hz`** | `0.000 ms` | `0.026 ms` |
-| **Neon Swarm · `GPU+NPU`** | Xclipse 540 `128`-agent MLP + ENN `/dev/vertex10` scan | **`9.239 ms`** | `108.2 Hz` | `6.192 ms` | `0.030 ms` |
+| **Flappy · `NPU`** | Samsung ENN `2.3.30` (`/dev/vertex10` spatial `.nnc`) | **`6.355 ms`** | `157.4 Hz` | `6.058 ms` | `0.000 ms` |
+| **Flappy · `NPU + GPU`** | ENN `.nnc` features → Xclipse 540 64-agent Vulkan MLP | **`8.605 ms`** | `116.2 Hz` | `6.032 ms` | `0.028 ms` |
+| **Flappy · `GPU`** | Xclipse 540 `Conv2D` sensor + 64-agent Vulkan MLP | **`0.795 ms`** | **`1258.1 Hz`** | `0.000 ms` | `0.039 ms` |
+| **Flappy · `GPU + NPU`** | Xclipse 540 64-agent MLP → ENN `.nnc` hazard check | **`8.620 ms`** | `116.0 Hz` | `6.096 ms` | `0.029 ms` |
+| **Neon Swarm · `GPU`** | Xclipse 540 `128`-agent Vulkan MLP (`128x8 → 16 → 2`) | **`0.902 ms`** | **`1108.9 Hz`** | `0.000 ms` | `0.029 ms` |
+| **Neon Swarm · `GPU+NPU`** | Xclipse 540 `128`-agent MLP + ENN `/dev/vertex10` scan | **`8.580 ms`** | `116.6 Hz` | `6.183 ms` | `0.031 ms` |
 
 ### Quantization Speedup (`FP32` vs `FP16` vs `Q8_0` vs `Q4_0` on Xclipse 540)
 ![Quantization Latency Comparison on Galaxy A56](docs/assets/quantization_speedup_a56.svg)
 
-### Real HuggingFace Chat LLMs (`Qwen2.5-0.5B`, `SmolLM2-135M`, `TinyStories-15M`) + Dynamic NPU Proof
+### Real HuggingFace Chat LLMs (`Qwen2.5-1.5B`, `Qwen2.5-0.5B`, `TinyStories-15M`) + Sister/Rose `.nnc` NPU Proof
 ![Galaxy A56 Telemetry Snapshot](docs/assets/llm_inference_a56.svg)
 
-* **13/13 SPIR-V compute kernels validated & verified on device** (`vec_add`, `vec_mul`, `relu`, `silu`, `softmax`, `matmul_f32`, `rmsnorm`, `rope_f32` interleaved & NeoX modes, `matvec_f16`, `matvec_q8_0`, `matvec_q4_0`, `conv2d_f32`), with persistent Vulkan slot buffers removing per-dispatch driver allocations (**`5.35x` speedup**, `6.4x` memory reduction in `Q4_0` vs CPU FP32).
-* **Real HuggingFace LLMs on Xclipse 540 GPU (`Q4_0` + ChatML `.exyllm v3` + raw UTF-8 `ETOK`):**
-  * **`TinyStories-15M Q4_0`** (`44.22 MiB`): **`18.38 tok/s`** (`2.58x` faster after slot-buffer reuse).
-  * **`SmolLM2-135M-Instruct Q4_0`** (`188.29 MiB`, 30L): **`3.43 tok/s`**.
-  * **`Qwen2.5-0.5B-Instruct Q4_0`** (`813.90 MiB`, 24L, `qkv_bias=true`): **`2.76 tok/s`** in German ChatML (`2.36–2.71 tok/s` CLI).
-* **Dynamic NPU Proof & `ENNC v211` Deep-Dive (`docs/NPU_NNC_DEEP_DIVE.md`):**
-  * Live dynamic verification on `/dev/vertex10`: `Scene A` (`7.14 ms`, `3f9058db92cf6a68`) != `Scene B` (`8.52 ms`, `b4b8477a5f793400`), `mean_abs_diff = 0.0020`.
-  * Custom synthesized `valid_add_cpu_hw1.nnc` (`ENNC v211` with `AddOptions` + 4D tensors, `TargetHw=1`) opens and executes cleanly on Samsung ENN `2.3.30` (**`0.361 ms`, `ENN_RET_SUCCESS`**), while `TargetHw=4` (`ENN_NPU`) requires proprietary offline `NCP v26` CMDQ bytecode.
+* **14/14 SPIR-V compute tests verified on `SM-A566B`:** 2D workgroup dispatch (`gl_WorkGroupID.y * 32768u + gl_WorkGroupID.x`) resolves the `M > 65535` row truncation on Xclipse 540 (`MatVec Q4_0 Vocab 70000x64` `max_abs_err = 9.537e-07`, `2537.19 us`); `960 MiB` VRAM cache prevents mid-dispatch eviction; `Q4_0` reaches **`5.29x` speedup** (`38.828 us`) and `6.40x` memory reduction vs CPU FP32.
+* **Real HuggingFace LLMs on Xclipse 540 GPU (`.exyllm v3` + Word-Boundary BPE `tok_style=2`):**
+  * **`Qwen2.5-1.5B-Instruct Q4_0`** (`1.48 GB`, `28L`, `qkv_bias=true`): **`1.56 tok/s`** inside the NPU+GPU Hybrid Vision-Chat APK (`1.29 tok/s` CLI).
+  * **`Qwen2.5-0.5B-Instruct Q8_0`** (`789.89 MiB`, `24L`): **`2.60 tok/s`** in app (`1.91 tok/s` CLI).
+  * **`TinyStories-15M Q4_0`** (`44.22 MiB`): **`18.38 tok/s`** | **`SmolLM2-135M Q4_0`** (`188.29 MiB`): **`3.43 tok/s`**.
+* **Samsung Sister / Rose `.nnc` Compatibility (`6/6` live on `/dev/vertex10`, see [SISTER_MODELS_AND_NPU_PORTING.md](docs/SISTER_MODELS_AND_NPU_PORTING.md)):**
+  * Galaxy A55 (`ex8845`), `Rose`, and native `Santa` `.nnc` models open and execute without cryptographic signature locks: `SRIB_HumanSeg` (`13.63 ms`), `SRIB_SID_V018` `[1,3,832,832]` (`61.84 ms`), `SRIBMidas_aiUPSCALER_2X` (`200.35 ms`), `SRIBMidas_aiDEBLUR_V140` (`145.41 ms`), `Santa aifrc` (`14.14 ms`), plus custom `valid_add_cpu_hw1.nnc` (`0.23 ms`, `ENN_RET_SUCCESS`).
 
 ---
 
