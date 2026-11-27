@@ -33,6 +33,7 @@
 
 * **14/14 SPIR-V compute tests verified on `SM-A566B`:** 2D workgroup dispatch (`gl_WorkGroupID.y * 32768u + gl_WorkGroupID.x`) resolves the `M > 65535` row truncation on Xclipse 540 (`MatVec Q4_0 Vocab 70000x64` `max_abs_err = 9.537e-07`, `2537.19 us`); `960 MiB` VRAM cache prevents mid-dispatch eviction; `Q4_0` reaches **`5.29x` speedup** (`38.828 us`) and `6.40x` memory reduction vs CPU FP32.
 * **Real HuggingFace LLMs on Xclipse 540 GPU (`.exyllm v3` + Word-Boundary BPE `tok_style=2`):**
+  * **Streaming, Multi-Turn KV-Cache Prefix Reuse & On-Device `.bin` Converter:** `LlmEngine::generate` now supports UTF-8-safe `StreamCallback` with early cancellation (`stopped_early`), automatic multi-turn KV-cache prefix reuse (`cached_prefix_tokens`), and C++ `convert_karpathy_bin_to_exyllm()`.
   * **`Qwen2.5-1.5B-Instruct Q4_0`** (`1.48 GB`, `28L`, `qkv_bias=true`): **`1.56 tok/s`** inside the NPU+GPU Hybrid Vision-Chat APK (`1.29 tok/s` CLI).
   * **`Qwen2.5-0.5B-Instruct Q8_0`** (`789.89 MiB`, `24L`): **`2.60 tok/s`** in app (`1.91 tok/s` CLI).
   * **`TinyStories-15M Q4_0`** (`44.22 MiB`): **`18.38 tok/s`** | **`SmolLM2-135M Q4_0`** (`188.29 MiB`): **`3.43 tok/s`**.

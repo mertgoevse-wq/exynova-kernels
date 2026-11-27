@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -140,9 +141,13 @@ struct GenerationResult {
     bool used_vulkan_gpu = false;
     bool is_demo_weights = false;
     bool used_bpe_vocab = false;
+    bool stopped_early = false;
+    uint32_t cached_prefix_tokens = 0;
     std::string quant_name;
     size_t model_bytes = 0;
 };
+
+using StreamCallback = std::function<bool(const std::string& piece, uint32_t step)>;
 
 class LlmEngine {
 public:
@@ -172,7 +177,8 @@ public:
 
     GenerationResult generate(const std::string& prompt,
                               uint32_t max_new_tokens,
-                              float temperature = 0.0f);
+                              float temperature = 0.0f,
+                              StreamCallback on_token = nullptr);
 
     bool is_initialized() const { return initialized_; }
     bool is_demo_weights() const { return is_demo_; }
@@ -224,6 +230,7 @@ private:
     // KV cache: [n_layers][max_seq_len * kv_dim]
     std::vector<std::vector<float>> k_cache_;
     std::vector<std::vector<float>> v_cache_;
+    std::vector<uint32_t> cached_tokens_;
 
     // Scratch buffers
     std::vector<float> x_;
@@ -241,6 +248,13 @@ private:
     std::vector<float> att_probs_;
     std::vector<float> x_pad_;
 };
+
+/// Convert a Karpathy llama2.c `.bin` (+ optional `tokenizer.bin`) directly to `.exyllm v3` + `.tok`.
+bool convert_karpathy_bin_to_exyllm(const std::string& bin_path,
+                                    const std::string& tok_bin_path,
+                                    const std::string& out_exyllm_path,
+                                    QuantType quant,
+                                    std::string* err = nullptr);
 
 }  // namespace llm
 }  // namespace exynova

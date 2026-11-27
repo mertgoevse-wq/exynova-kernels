@@ -505,6 +505,7 @@ void LlmEngine::reset_kv_cache() {
     for (auto& vc : v_cache_) {
         std::fill(vc.begin(), vc.end(), 0.0f);
     }
+    cached_tokens_.clear();
 }
 
 bool LlmEngine::init_demo_tiny_lm(const LlmConfig& cfg,
@@ -524,6 +525,7 @@ bool LlmEngine::init_demo_tiny_lm(const LlmConfig& cfg,
     has_vocab_ = false;
     vocab_.clear();
     piece_to_id_.clear();
+    cached_tokens_.clear();
     quant_type_ = quant;
 
     const uint32_t head_dim = cfg_.dim / cfg_.n_heads;
@@ -762,6 +764,7 @@ bool LlmEngine::load_exyllm_file(const std::string& path,
     has_vocab_ = false;
     vocab_.clear();
     piece_to_id_.clear();
+    cached_tokens_.clear();
     quant_type_ = static_cast<QuantType>(quant_type);
     token_embedding_ = std::move(emb);
     token_embedding_f16_ = std::move(emb_f16);
@@ -1362,9 +1365,97 @@ uint32_t LlmEngine::sample_token(const std::vector<float>& logits,
     return static_cast<uint32_t>(probs.size() - 1);
 }
 
+namespace {
+
+size_t utf8_complete_prefix_len(const std::string& s) {
+    size_t i = 0;
+    const size_t n = s.size();
+    while (i < n) {
+        const unsigned char b = static_cast<unsigned char>(s[i]);
+        size_t need = 1;
+        if (b < 0x80u) {
+            need = 1;
+        } else if ((b & 0xE0u) == 0xC0u) {
+            need = 2;
+        } else if ((b & 0xF0u) == 0xE0u) {
+            need = 3;
+        } else if ((b & 0xF8u) == 0xF0u) {
+            need = 4;
+        } else {
+            // Unexpected continuation/invalid byte: emit immediately rather than stalling.
+            ++i;
+            continue;
+        }
+        if (i + need > n) {
+            break;
+        }
+        bool valid_cont = true;
+        for (size_t k = 1; k < need; ++k) {
+            if ((static_cast<unsigned char>(s[i + k]) & 0xC0u) != 0x80u) {
+                valid_cont = false;
+                break;
+            }
+        }
+        i += valid_cont ? need : 1u;
+    }
+    return i;
+}
+
+template <typename T>
+bool write_pod_bin(std::ofstream& ofs, const T& v) {
+    ofs.write(reinterpret_cast<const char*>(&v), sizeof(T));
+    return static_cast<bool>(ofs);
+}
+
+bool write_matrix_bin(std::ofstream& ofs, const float* data, uint32_t rows, uint32_t cols,
+                      QuantType quant) {
+    switch (quant) {
+        case QuantType::F32:
+            ofs.write(reinterpret_cast<const char*>(data),
+                      static_cast<std::streamsize>(static_cast<size_t>(rows) * cols * sizeof(float)));
+            return static_cast<bool>(ofs);
+        case QuantType::Q8_0: {
+            auto q8 = quantize_q8_0(data, rows, cols);
+            if (!q8.packed_i8.empty()) {
+                ofs.write(reinterpret_cast<const char*>(q8.packed_i8.data()),
+                          static_cast<std::streamsize>(q8.packed_i8.size() * sizeof(int32_t)));
+            }
+            if (!q8.scales.empty()) {
+                ofs.write(reinterpret_cast<const char*>(q8.scales.data()),
+                          static_cast<std::streamsize>(q8.scales.size() * sizeof(float)));
+            }
+            return static_cast<bool>(ofs);
+        }
+        case QuantType::Q4_0: {
+            auto q4 = quantize_q4_0(data, rows, cols);
+            if (!q4.packed_q4.empty()) {
+                ofs.write(reinterpret_cast<const char*>(q4.packed_q4.data()),
+                          static_cast<std::streamsize>(q4.packed_q4.size() * sizeof(uint32_t)));
+            }
+            if (!q4.scales.empty()) {
+                ofs.write(reinterpret_cast<const char*>(q4.scales.data()),
+                          static_cast<std::streamsize>(q4.scales.size() * sizeof(float)));
+            }
+            return static_cast<bool>(ofs);
+        }
+        case QuantType::FP16: {
+            auto f16 = quantize_f16(data, rows, cols);
+            if (!f16.packed_f16.empty()) {
+                ofs.write(reinterpret_cast<const char*>(f16.packed_f16.data()),
+                          static_cast<std::streamsize>(f16.packed_f16.size() * sizeof(uint32_t)));
+            }
+            return static_cast<bool>(ofs);
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 GenerationResult LlmEngine::generate(const std::string& prompt,
                                      uint32_t max_new_tokens,
-                                     float temperature) {
+                                     float temperature,
+                                     StreamCallback on_token) {
     GenerationResult res;
     if (!initialized_) {
         return res;
@@ -1376,25 +1467,47 @@ GenerationResult LlmEngine::generate(const std::string& prompt,
     res.quant_name = quant_type_name(quant_type_);
     res.model_bytes = model_bytes();
 
-    reset_kv_cache();
-
     std::vector<uint32_t> prompt_tokens = encode_prompt(prompt);
-    if (prompt_tokens.size() >= cfg_.max_seq_len) {
-        prompt_tokens.resize(cfg_.max_seq_len - 1u);
-    }
     if (prompt_tokens.empty()) {
         return res;
     }
+    if (prompt_tokens.size() >= cfg_.max_seq_len) {
+        const uint32_t keep = (cfg_.max_seq_len > 32u) ? (cfg_.max_seq_len - 32u) : (cfg_.max_seq_len - 1u);
+        if (prompt_tokens.size() > keep && keep > 0u) {
+            prompt_tokens.erase(prompt_tokens.begin(),
+                                prompt_tokens.end() - static_cast<std::ptrdiff_t>(keep));
+        } else {
+            prompt_tokens.resize(cfg_.max_seq_len - 1u);
+        }
+        reset_kv_cache();
+    }
+
+    // Reuse matching KV-cache prefix across consecutive multi-turn prompts;
+    // keep at least the final prompt token uncached so logits reflect it.
+    size_t lcp = 0;
+    while (lcp < cached_tokens_.size() &&
+           lcp + 1u < prompt_tokens.size() &&
+           cached_tokens_[lcp] == prompt_tokens[lcp]) {
+        ++lcp;
+    }
+    if (lcp == 0u) {
+        reset_kv_cache();
+    } else {
+        cached_tokens_.resize(lcp);
+    }
+    res.cached_prefix_tokens = static_cast<uint32_t>(lcp);
 
     std::vector<float> logits;
     std::string err;
-    uint32_t pos = 0;
+    uint32_t pos = static_cast<uint32_t>(lcp);
 
     const auto t_prefill_start = std::chrono::steady_clock::now();
-    for (size_t i = 0; i < prompt_tokens.size(); ++i) {
+    for (size_t i = lcp; i < prompt_tokens.size(); ++i) {
         if (!forward_token(prompt_tokens[i], pos, logits, &err)) {
+            reset_kv_cache();
             return res;
         }
+        cached_tokens_.push_back(prompt_tokens[i]);
         ++pos;
     }
     const auto t_prefill_end = std::chrono::steady_clock::now();
@@ -1407,6 +1520,7 @@ GenerationResult LlmEngine::generate(const std::string& prompt,
     const auto t_decode_start = std::chrono::steady_clock::now();
     std::vector<uint32_t> recent_tokens;
     recent_tokens.reserve(to_gen);
+    std::string utf8_pending;
     for (uint32_t step = 0; step < to_gen; ++step) {
         if (!logits.empty()) {
             const size_t hist_start = recent_tokens.size() > 48u ? recent_tokens.size() - 48u : 0u;
@@ -1428,7 +1542,20 @@ GenerationResult LlmEngine::generate(const std::string& prompt,
             break;
         }
         res.text += piece;
+        utf8_pending += piece;
         ++res.tokens_generated;
+
+        if (on_token) {
+            const size_t ready = utf8_complete_prefix_len(utf8_pending);
+            const std::string emit = (ready > 0u) ? utf8_pending.substr(0, ready) : std::string();
+            if (ready > 0u) {
+                utf8_pending.erase(0, ready);
+            }
+            if (!on_token(emit, res.tokens_generated)) {
+                res.stopped_early = true;
+                break;
+            }
+        }
 
         if (pos >= cfg_.max_seq_len || step + 1u >= to_gen) {
             break;
@@ -1436,7 +1563,11 @@ GenerationResult LlmEngine::generate(const std::string& prompt,
         if (!forward_token(next_tok, pos, logits, &err)) {
             break;
         }
+        cached_tokens_.push_back(next_tok);
         ++pos;
+    }
+    if (on_token && !utf8_pending.empty() && !res.stopped_early) {
+        on_token(utf8_pending, res.tokens_generated);
     }
     const auto t_decode_end = std::chrono::steady_clock::now();
     res.decode_ms = std::chrono::duration<double, std::milli>(t_decode_end - t_decode_start).count();
@@ -1445,6 +1576,214 @@ GenerationResult LlmEngine::generate(const std::string& prompt,
         : 0.0;
 
     return res;
+}
+
+bool convert_karpathy_bin_to_exyllm(const std::string& bin_path,
+                                    const std::string& tok_bin_path,
+                                    const std::string& out_exyllm_path,
+                                    QuantType quant,
+                                    std::string* err) {
+    std::ifstream ifs(bin_path, std::ios::binary);
+    if (!ifs.is_open()) {
+        set_err(err, "Failed to open Karpathy .bin file: " + bin_path);
+        return false;
+    }
+
+    int32_t hdr[7] = {};
+    if (!ifs.read(reinterpret_cast<char*>(hdr), sizeof(hdr))) {
+        set_err(err, "Truncated Karpathy .bin header");
+        return false;
+    }
+    const int32_t dim_i = hdr[0];
+    const int32_t hidden_i = hdr[1];
+    const int32_t n_layers_i = hdr[2];
+    const int32_t n_heads_i = hdr[3];
+    const int32_t n_kv_heads_i = hdr[4];
+    const int32_t vocab_raw = hdr[5];
+    const int32_t seq_len_i = hdr[6];
+
+    const bool shared_weights = (vocab_raw > 0);
+    const int32_t vocab_i = (vocab_raw < 0) ? -vocab_raw : vocab_raw;
+    if (dim_i <= 0 || hidden_i <= 0 || n_layers_i <= 0 || n_heads_i <= 0 ||
+        n_kv_heads_i <= 0 || vocab_i <= 0 || seq_len_i <= 0 ||
+        (dim_i % n_heads_i) != 0 || (n_heads_i % n_kv_heads_i) != 0) {
+        set_err(err, "Invalid hyperparameters in Karpathy .bin header");
+        return false;
+    }
+
+    const uint32_t dim = static_cast<uint32_t>(dim_i);
+    const uint32_t hidden_dim = static_cast<uint32_t>(hidden_i);
+    const uint32_t n_layers = static_cast<uint32_t>(n_layers_i);
+    const uint32_t n_heads = static_cast<uint32_t>(n_heads_i);
+    const uint32_t n_kv_heads = static_cast<uint32_t>(n_kv_heads_i);
+    const uint32_t vocab_size = static_cast<uint32_t>(vocab_i);
+    const uint32_t head_dim = dim / n_heads;
+    const uint32_t kv_dim = n_kv_heads * head_dim;
+    const uint32_t max_seq = std::min<uint32_t>(static_cast<uint32_t>(seq_len_i), 256u);
+
+    // Byte offsets of each grouped tensor block after 28-byte header
+    const uint64_t f32 = sizeof(float);
+    const uint64_t off_emb = 28ULL;
+    const uint64_t sz_emb = static_cast<uint64_t>(vocab_size) * dim * f32;
+    const uint64_t off_rms_att = off_emb + sz_emb;
+    const uint64_t sz_rms = static_cast<uint64_t>(n_layers) * dim * f32;
+    const uint64_t off_wq = off_rms_att + sz_rms;
+    const uint64_t sz_wq_l = static_cast<uint64_t>(dim) * dim * f32;
+    const uint64_t off_wk = off_wq + static_cast<uint64_t>(n_layers) * sz_wq_l;
+    const uint64_t sz_wk_l = static_cast<uint64_t>(kv_dim) * dim * f32;
+    const uint64_t off_wv = off_wk + static_cast<uint64_t>(n_layers) * sz_wk_l;
+    const uint64_t off_wo = off_wv + static_cast<uint64_t>(n_layers) * sz_wk_l;
+    const uint64_t off_rms_ffn = off_wo + static_cast<uint64_t>(n_layers) * sz_wq_l;
+    const uint64_t off_w1 = off_rms_ffn + sz_rms;
+    const uint64_t sz_w1_l = static_cast<uint64_t>(hidden_dim) * dim * f32;
+    const uint64_t off_w2 = off_w1 + static_cast<uint64_t>(n_layers) * sz_w1_l;
+    const uint64_t sz_w2_l = static_cast<uint64_t>(dim) * hidden_dim * f32;
+    const uint64_t off_w3 = off_w2 + static_cast<uint64_t>(n_layers) * sz_w2_l;
+    const uint64_t off_rms_final = off_w3 + static_cast<uint64_t>(n_layers) * sz_w1_l;
+    const uint64_t sz_freq_cis = static_cast<uint64_t>(seq_len_i) * head_dim * f32;
+    const uint64_t off_wcls = off_rms_final + static_cast<uint64_t>(dim) * f32 + sz_freq_cis;
+
+    auto read_slice = [&](uint64_t byte_off, size_t count, std::vector<float>& dst) -> bool {
+        dst.resize(count);
+        ifs.seekg(static_cast<std::streamoff>(byte_off), std::ios::beg);
+        ifs.read(reinterpret_cast<char*>(dst.data()),
+                 static_cast<std::streamsize>(count * sizeof(float)));
+        return static_cast<bool>(ifs);
+    };
+
+    std::ofstream ofs(out_exyllm_path, std::ios::binary);
+    if (!ofs.is_open()) {
+        set_err(err, "Failed to create output .exyllm file: " + out_exyllm_path);
+        return false;
+    }
+
+    // Write .exyllm v3 header with flags=2 (FP16 token embeddings for 50% smaller RAM)
+    const uint32_t ver = 3u;
+    const uint32_t q_u32 = static_cast<uint32_t>(quant);
+    const uint32_t rope_mode = 0u;
+    const uint32_t bos = 1u;
+    const uint32_t eos = 2u;
+    const uint32_t flags = 2u;
+    const uint32_t alt_eos = 0u;
+    const float rms_eps = 1e-5f;
+    const float rope_theta = 10000.0f;
+    ofs.write("ELLM", 4);
+    if (!write_pod_bin(ofs, ver) ||
+        !write_pod_bin(ofs, vocab_size) ||
+        !write_pod_bin(ofs, dim) ||
+        !write_pod_bin(ofs, hidden_dim) ||
+        !write_pod_bin(ofs, n_layers) ||
+        !write_pod_bin(ofs, n_heads) ||
+        !write_pod_bin(ofs, n_kv_heads) ||
+        !write_pod_bin(ofs, max_seq) ||
+        !write_pod_bin(ofs, rms_eps) ||
+        !write_pod_bin(ofs, rope_theta) ||
+        !write_pod_bin(ofs, q_u32) ||
+        !write_pod_bin(ofs, rope_mode) ||
+        !write_pod_bin(ofs, bos) ||
+        !write_pod_bin(ofs, eos) ||
+        !write_pod_bin(ofs, flags) ||
+        !write_pod_bin(ofs, alt_eos)) {
+        set_err(err, "Failed to write .exyllm v3 header");
+        return false;
+    }
+
+    std::vector<float> buf;
+    if (!read_slice(off_emb, static_cast<size_t>(vocab_size) * dim, buf)) {
+        set_err(err, "Failed to read embedding weights from .bin");
+        return false;
+    }
+    std::vector<uint16_t> emb_f16(buf.size());
+    for (size_t i = 0; i < buf.size(); ++i) {
+        emb_f16[i] = float32_to_float16(buf[i]);
+    }
+    ofs.write(reinterpret_cast<const char*>(emb_f16.data()),
+              static_cast<std::streamsize>(emb_f16.size() * sizeof(uint16_t)));
+
+    for (uint32_t l = 0; l < n_layers; ++l) {
+        const uint64_t lu = static_cast<uint64_t>(l);
+        if (!read_slice(off_rms_att + lu * dim * f32, dim, buf)) return false;
+        ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(dim * sizeof(float)));
+
+        if (!read_slice(off_wq + lu * sz_wq_l, dim * dim, buf) || !write_matrix_bin(ofs, buf.data(), dim, dim, quant)) return false;
+        if (!read_slice(off_wk + lu * sz_wk_l, kv_dim * dim, buf) || !write_matrix_bin(ofs, buf.data(), kv_dim, dim, quant)) return false;
+        if (!read_slice(off_wv + lu * sz_wk_l, kv_dim * dim, buf) || !write_matrix_bin(ofs, buf.data(), kv_dim, dim, quant)) return false;
+        if (!read_slice(off_wo + lu * sz_wq_l, dim * dim, buf) || !write_matrix_bin(ofs, buf.data(), dim, dim, quant)) return false;
+
+        if (!read_slice(off_rms_ffn + lu * dim * f32, dim, buf)) return false;
+        ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(dim * sizeof(float)));
+
+        if (!read_slice(off_w1 + lu * sz_w1_l, hidden_dim * dim, buf) || !write_matrix_bin(ofs, buf.data(), hidden_dim, dim, quant)) return false;
+        if (!read_slice(off_w2 + lu * sz_w2_l, dim * hidden_dim, buf) || !write_matrix_bin(ofs, buf.data(), dim, hidden_dim, quant)) return false;
+        if (!read_slice(off_w3 + lu * sz_w1_l, hidden_dim * dim, buf) || !write_matrix_bin(ofs, buf.data(), hidden_dim, dim, quant)) return false;
+    }
+
+    if (!read_slice(off_rms_final, dim, buf)) {
+        set_err(err, "Failed to read rms_final from .bin");
+        return false;
+    }
+    ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(dim * sizeof(float)));
+
+    const uint64_t wcls_off = shared_weights ? off_emb : off_wcls;
+    if (!read_slice(wcls_off, static_cast<size_t>(vocab_size) * dim, buf) ||
+        !write_matrix_bin(ofs, buf.data(), vocab_size, dim, quant)) {
+        set_err(err, "Failed to read/write lm_head from .bin");
+        return false;
+    }
+    if (!ofs) {
+        set_err(err, "Write error while creating .exyllm");
+        return false;
+    }
+
+    if (!tok_bin_path.empty()) {
+        std::ifstream tifs(tok_bin_path, std::ios::binary);
+        if (!tifs.is_open()) {
+            set_err(err, "Failed to open tokenizer .bin: " + tok_bin_path);
+            return false;
+        }
+        int32_t max_tok_len = 0;
+        if (!read_pod(tifs, max_tok_len)) {
+            set_err(err, "Invalid tokenizer .bin header");
+            return false;
+        }
+        const std::string out_tok = out_exyllm_path + ".tok";
+        std::ofstream tofs(out_tok, std::ios::binary);
+        if (!tofs.is_open()) {
+            set_err(err, "Failed to create sidecar tokenizer: " + out_tok);
+            return false;
+        }
+        tofs.write("ETOK", 4);
+        const uint32_t etok_ver = 1u, etok_style = 2u;
+        write_pod_bin(tofs, etok_ver);
+        write_pod_bin(tofs, vocab_size);
+        write_pod_bin(tofs, bos);
+        write_pod_bin(tofs, eos);
+        write_pod_bin(tofs, etok_style);
+        for (uint32_t i = 0; i < vocab_size; ++i) {
+            float sc = 0.0f;
+            int32_t slen = 0;
+            if (!read_pod(tifs, sc) || !read_pod(tifs, slen) || slen < 0 || slen > 4096) {
+                set_err(err, "Truncated tokenizer.bin entry");
+                return false;
+            }
+            std::string piece(static_cast<size_t>(slen), '\0');
+            if (slen > 0 && !tifs.read(&piece[0], slen)) {
+                set_err(err, "Unexpected EOF reading tokenizer.bin piece");
+                return false;
+            }
+            const uint32_t ulen = static_cast<uint32_t>(slen);
+            write_pod_bin(tofs, sc);
+            write_pod_bin(tofs, ulen);
+            if (ulen > 0) {
+                tofs.write(piece.data(), slen);
+            }
+        }
+        if (!tofs) {
+            set_err(err, "Failed writing sidecar .tok file");
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace llm

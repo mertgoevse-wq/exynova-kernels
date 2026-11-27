@@ -362,7 +362,7 @@ def export_hf_causal_lm(
             with exy_path.open("wb") as f:
                 write_exyllm_v3_header(
                     f, vocab_size, dim, hidden_dim, n_layers, n_heads, n_kv_heads,
-                    512, rms_eps, rope_theta, QUANT_IDS[q], 1, bos_id, eos_id,
+                    1024, rms_eps, rope_theta, QUANT_IDS[q], 1, bos_id, eos_id,
                     flags, alt_eos,
                 )
                 f.write(emb.astype(np.float16).tobytes())
@@ -392,7 +392,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Download open HuggingFace LLMs and convert to .exyllm v3 + .tok")
     ap.add_argument(
         "--preset",
-        choices=["tinystories-15m", "tinystories-42m", "smollm2-135m", "qwen2.5-0.5b", "qwen2.5-1.5b"],
+        choices=[
+            "tinystories-15m",
+            "tinystories-42m",
+            "smollm2-135m",
+            "smollm2-360m",
+            "qwen2.5-0.5b",
+            "qwen2.5-1.5b",
+            "qwen2.5-coder-0.5b",
+            "qwen2.5-0.5b-abliterated",
+            "qwen2.5-1.5b-abliterated",
+        ],
         default="smollm2-135m",
     )
     ap.add_argument(
@@ -411,11 +421,23 @@ def main() -> int:
     elif args.preset == "smollm2-135m":
         export_hf_causal_lm("HuggingFaceTB/SmolLM2-135M-Instruct", "smollm2_135m",
                             args.quant, args.out_dir, 1, 2, 0)
+    elif args.preset == "smollm2-360m":
+        export_hf_causal_lm("HuggingFaceTB/SmolLM2-360M-Instruct", "smollm2_360m",
+                            args.quant, args.out_dir, 1, 2, 0)
     elif args.preset == "qwen2.5-0.5b":
         export_hf_causal_lm("Qwen/Qwen2.5-0.5B-Instruct", "qwen25_05b",
                             args.quant, args.out_dir, 151643, 151645, 151643)
     elif args.preset == "qwen2.5-1.5b":
         export_hf_causal_lm("Qwen/Qwen2.5-1.5B-Instruct", "qwen25_15b",
+                            args.quant, args.out_dir, 151643, 151645, 151643)
+    elif args.preset == "qwen2.5-coder-0.5b":
+        export_hf_causal_lm("Qwen/Qwen2.5-Coder-0.5B-Instruct", "qwen25_coder_05b",
+                            args.quant, args.out_dir, 151643, 151645, 151643)
+    elif args.preset == "qwen2.5-0.5b-abliterated":
+        export_hf_causal_lm("huihui-ai/Qwen2.5-0.5B-Instruct-abliterated", "qwen25_05b_abliterated",
+                            args.quant, args.out_dir, 151643, 151645, 151643)
+    elif args.preset == "qwen2.5-1.5b-abliterated":
+        export_hf_causal_lm("huihui-ai/Qwen2.5-1.5B-Instruct-abliterated", "qwen25_15b_abliterated",
                             args.quant, args.out_dir, 151643, 151645, 151643)
     return 0
 
