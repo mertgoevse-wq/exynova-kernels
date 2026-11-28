@@ -63,6 +63,28 @@ public:
                     uint32_t M, uint32_t K,
                     double* gpu_us = nullptr, std::string* err = nullptr,
                     bool cache_weights = false);
+
+    struct Q4_0BatchItem {
+        const uint32_t* packed_q4 = nullptr;
+        const float* scales = nullptr;
+        float* y = nullptr;
+        uint32_t M = 0;
+    };
+    struct Q8_0BatchItem {
+        const int32_t* packed_i8 = nullptr;
+        const float* scales = nullptr;
+        float* y = nullptr;
+        uint32_t M = 0;
+    };
+
+    bool matvec_q4_0_batch(const Q4_0BatchItem* items, uint32_t count,
+                           const float* x, uint32_t K,
+                           double* gpu_us = nullptr, std::string* err = nullptr,
+                           bool cache_weights = true);
+    bool matvec_q8_0_batch(const Q8_0BatchItem* items, uint32_t count,
+                           const float* x, uint32_t K,
+                           double* gpu_us = nullptr, std::string* err = nullptr,
+                           bool cache_weights = true);
     bool conv2d_nchw(const float* input, const float* weight, const float* bias, float* out,
                      uint32_t N, uint32_t C_in, uint32_t H_in, uint32_t W_in,
                      uint32_t C_out, uint32_t KH, uint32_t KW,

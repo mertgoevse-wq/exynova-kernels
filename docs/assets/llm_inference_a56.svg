@@ -2,21 +2,21 @@
 <defs><linearGradient id="bgl" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#090D16"/><stop offset="100%" stop-color="#131B2E"/></linearGradient></defs>
 <rect width="880" height="340" rx="14" fill="url(#bgl)" stroke="#1E293B" stroke-width="2"/>
 <text x="28" y="36" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold">Galaxy A56 On-Device LLM Speed + Dynamic NPU Proof</text>
-<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Persistent Vulkan slot buffers on Xclipse 540 + live Scene-A vs Scene-B NPU verification</text>
+<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Batched QKV/FFN Vulkan MatVec + 1408 MiB Cache on Xclipse 540 + ENN /dev/vertex10</text>
 <rect x="28" y="78" width="264" height="145" rx="12" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
 <text x="42" y="106" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">TinyStories-15M Q4_0</text>
-<text x="42" y="156" fill="#10B981" font-family="Consolas, monospace" font-size="27" font-weight="bold">18.38 tok/s</text>
-<text x="42" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">44.2 MB · 6L · Slot-Buffer Boost</text>
+<text x="42" y="156" fill="#10B981" font-family="Consolas, monospace" font-size="27" font-weight="bold">28.43 tok/s</text>
+<text x="42" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">44.2 MB · 6L · Batched Vulkan</text>
 <rect x="308" y="78" width="264" height="145" rx="12" fill="#0F172A" stroke="#00E5FF" stroke-width="1.5"/>
 <text x="322" y="106" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">Qwen2.5-0.5B Q8_0</text>
-<text x="322" y="156" fill="#00E5FF" font-family="Consolas, monospace" font-size="27" font-weight="bold">2.60 tok/s</text>
-<text x="322" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">789.9 MB · 24L · 2D-Dispatch Fix</text>
+<text x="322" y="156" fill="#00E5FF" font-family="Consolas, monospace" font-size="27" font-weight="bold">5.71 tok/s</text>
+<text x="322" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">789.8 MB · 24L · 3.0x Speedup</text>
 <rect x="588" y="78" width="264" height="145" rx="12" fill="#0F172A" stroke="#A78BFA" stroke-width="1.5"/>
 <text x="602" y="106" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="bold">Qwen2.5-1.5B Q4_0</text>
-<text x="602" y="156" fill="#A78BFA" font-family="Consolas, monospace" font-size="27" font-weight="bold">1.56 tok/s</text>
-<text x="602" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">1.48 GB · 28L · NPU+GPU Hybrid APK</text>
+<text x="602" y="156" fill="#A78BFA" font-family="Consolas, monospace" font-size="27" font-weight="bold">2.85 tok/s</text>
+<text x="602" y="196" fill="#94A3B8" font-family="Consolas, monospace" font-size="10.8">1.48 GB · 28L · NPU+GPU Hybrid</text>
 <rect x="28" y="242" width="824" height="58" rx="10" fill="#0F172A" stroke="#F59E0B" stroke-width="1.4"/>
-<text x="42" y="266" fill="#F59E0B" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">Live Dynamic ENN NPU Proof (/dev/vertex10): Scene A (12.75 ms, 3f9058db92cf6a68) != Scene B (9.81 ms, b4b8477a5f793400)</text>
+<text x="42" y="266" fill="#F59E0B" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="bold">Live Dynamic ENN NPU Proof (/dev/vertex10): Scene A (6.65 ms, 3f9058db92cf6a68) != Scene B (6.56 ms, b4b8477a5f793400)</text>
 <text x="42" y="286" fill="#CBD5E1" font-family="Consolas, monospace" font-size="11">mean_abs_diff=0.0020 | outputs_differ=True | 5/5 Sister/Rose .nnc &amp; ENNC v211 ADD OK</text>
 <text x="28" y="326" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">Measured live on Samsung Galaxy A56 5G (SM-A566B / Exynos 1580) · Zero synthetic/mocked metrics</text>
 </svg>

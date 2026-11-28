@@ -496,6 +496,12 @@ void LlmEngine::allocate_state() {
     hb2_.assign(cfg_.hidden_dim, 0.0f);
     att_scores_.assign(static_cast<size_t>(cfg_.n_heads) * cfg_.max_seq_len, 0.0f);
     att_probs_.assign(static_cast<size_t>(cfg_.n_heads) * cfg_.max_seq_len, 0.0f);
+    const uint32_t half_dim = head_dim / 2u;
+    rope_inv_freq_.resize(half_dim);
+    for (uint32_t j = 0; j < half_dim; ++j) {
+        const double exponent = -2.0 * static_cast<double>(j) / static_cast<double>(head_dim);
+        rope_inv_freq_[j] = static_cast<float>(std::pow(static_cast<double>(cfg_.rope_theta), exponent));
+    }
 }
 
 void LlmEngine::reset_kv_cache() {
@@ -984,18 +990,16 @@ std::string LlmEngine::decode_token(uint32_t token_id) const {
 
 bool LlmEngine::run_rmsnorm(const float* x, const float* w, float* out,
                             uint32_t cols, std::string* err) {
-    if (vk_ && vk_->is_initialized()) {
-        return vk_->rmsnorm(x, w, out, 1, cols, cfg_.rms_eps, nullptr, err, true);
-    }
-    double sum_sq = 0.0;
+    (void)err;
+    float sum_sq = 0.0f;
     for (uint32_t c = 0; c < cols; ++c) {
-        const double v = static_cast<double>(x[c]);
+        const float v = x[c];
         sum_sq += v * v;
     }
-    const double scale =
-        1.0 / std::sqrt(sum_sq / static_cast<double>(cols) + static_cast<double>(cfg_.rms_eps));
+    const float scale =
+        1.0f / std::sqrt(sum_sq / static_cast<float>(cols) + cfg_.rms_eps);
     for (uint32_t c = 0; c < cols; ++c) {
-        out[c] = static_cast<float>(static_cast<double>(x[c]) * scale * static_cast<double>(w[c]));
+        out[c] = x[c] * scale * w[c];
     }
     return true;
 }
@@ -1126,29 +1130,74 @@ bool LlmEngine::run_matvec(const WeightMatrix& w, const float* x, float* y,
     return true;
 }
 
+bool LlmEngine::run_matvec_batch(const WeightMatrix* const* mats, float* const* outs,
+                                 uint32_t count, const float* x, std::string* err) {
+    if (count == 0u) return true;
+    if (vk_ && vk_->is_initialized() && count <= 4u) {
+        const QuantType q = mats[0]->quant;
+        const uint32_t cols = mats[0]->cols;
+        bool uniform = (q == QuantType::Q4_0 || q == QuantType::Q8_0);
+        for (uint32_t i = 1; i < count && uniform; ++i) {
+            if (mats[i]->quant != q || mats[i]->cols != cols) {
+                uniform = false;
+            }
+        }
+        if (uniform) {
+            const uint32_t pad_cols = (q == QuantType::Q4_0)
+                ? mats[0]->q4.padded_cols() : mats[0]->q8.padded_cols();
+            const float* x_ptr = x;
+            if (pad_cols != cols) {
+                x_pad_.assign(pad_cols, 0.0f);
+                std::memcpy(x_pad_.data(), x, static_cast<size_t>(cols) * sizeof(float));
+                x_ptr = x_pad_.data();
+            }
+            if (q == QuantType::Q4_0) {
+                gpu::VulkanComputeBackend::Q4_0BatchItem items[4]{};
+                for (uint32_t i = 0; i < count; ++i) {
+                    items[i] = {mats[i]->q4.packed_q4.data(), mats[i]->q4.scales.data(), outs[i], mats[i]->rows};
+                }
+                return vk_->matvec_q4_0_batch(items, count, x_ptr, pad_cols, nullptr, err, true);
+            } else {
+                gpu::VulkanComputeBackend::Q8_0BatchItem items[4]{};
+                for (uint32_t i = 0; i < count; ++i) {
+                    items[i] = {mats[i]->q8.packed_i8.data(), mats[i]->q8.scales.data(), outs[i], mats[i]->rows};
+                }
+                return vk_->matvec_q8_0_batch(items, count, x_ptr, pad_cols, nullptr, err, true);
+            }
+        }
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!run_matvec(*mats[i], x, outs[i], err)) return false;
+    }
+    return true;
+}
+
 bool LlmEngine::run_rope(const float* in, float* out, uint32_t num_heads,
                          uint32_t head_dim, uint32_t pos, std::string* err) {
-    if (vk_ && vk_->is_initialized()) {
-        return vk_->rope(in, out, num_heads, head_dim, pos, cfg_.rope_theta,
-                         nullptr, err, cfg_.rope_mode);
-    }
+    (void)err;
     const uint32_t half_dim = head_dim / 2u;
-    for (uint32_t h = 0; h < num_heads; ++h) {
-        const size_t h_base = static_cast<size_t>(h) * head_dim;
-        for (uint32_t j = 0; j < half_dim; ++j) {
+    const float fpos = static_cast<float>(pos);
+    for (uint32_t j = 0; j < half_dim; ++j) {
+        const float freq = (j < rope_inv_freq_.size())
+            ? rope_inv_freq_[j]
+            : static_cast<float>(std::pow(static_cast<double>(cfg_.rope_theta),
+                                          -2.0 * static_cast<double>(j) / static_cast<double>(head_dim)));
+        const float angle = fpos * freq;
+        const float c = std::cosf(angle);
+        const float s = std::sinf(angle);
+        for (uint32_t h = 0; h < num_heads; ++h) {
+            const size_t h_base = static_cast<size_t>(h) * head_dim;
             const size_t i0 = (cfg_.rope_mode == 1u) ? (h_base + j) : (h_base + 2u * j);
             const size_t i1 = (cfg_.rope_mode == 1u) ? (h_base + half_dim + j) : (i0 + 1u);
-            const double exponent = -2.0 * static_cast<double>(j) / static_cast<double>(head_dim);
-            const double angle =
-                static_cast<double>(pos) * std::pow(static_cast<double>(cfg_.rope_theta), exponent);
-            const double c = std::cos(angle);
-            const double s = std::sin(angle);
-            const double x0 = static_cast<double>(in[i0]);
-            const double x1 = static_cast<double>(in[i1]);
-            out[i0] = static_cast<float>(x0 * c - x1 * s);
-            out[i1] = static_cast<float>(x0 * s + x1 * c);
+            const float x0 = in[i0];
+            const float x1 = in[i1];
+            out[i0] = x0 * c - x1 * s;
+            out[i1] = x0 * s + x1 * c;
         }
-        if ((head_dim & 1u) != 0u) {
+    }
+    if ((head_dim & 1u) != 0u) {
+        for (uint32_t h = 0; h < num_heads; ++h) {
+            const size_t h_base = static_cast<size_t>(h) * head_dim;
             out[h_base + head_dim - 1u] = in[h_base + head_dim - 1u];
         }
     }
@@ -1156,34 +1205,32 @@ bool LlmEngine::run_rope(const float* in, float* out, uint32_t num_heads,
 }
 
 bool LlmEngine::run_silu(const float* in, float* out, uint32_t count, std::string* err) {
-    if (vk_ && vk_->is_initialized()) {
-        return vk_->silu(in, out, count, nullptr, err);
-    }
+    (void)err;
     for (uint32_t i = 0; i < count; ++i) {
-        const double v = static_cast<double>(in[i]);
-        out[i] = static_cast<float>(v / (1.0 + std::exp(-v)));
+        const float v = in[i];
+        out[i] = v / (1.0f + std::expf(-v));
     }
     return true;
 }
 
 bool LlmEngine::run_softmax(const float* in, float* out, uint32_t rows, uint32_t cols,
                             std::string* err) {
-    if (vk_ && vk_->is_initialized()) {
-        return vk_->softmax(in, out, rows, cols, nullptr, err);
-    }
+    (void)err;
     for (uint32_t r = 0; r < rows; ++r) {
         const size_t base = static_cast<size_t>(r) * cols;
-        double row_max = static_cast<double>(in[base]);
+        float row_max = in[base];
         for (uint32_t c = 1; c < cols; ++c) {
-            row_max = std::max(row_max, static_cast<double>(in[base + c]));
+            row_max = std::max(row_max, in[base + c]);
         }
-        double sum = 0.0;
+        float sum = 0.0f;
         for (uint32_t c = 0; c < cols; ++c) {
-            sum += std::exp(static_cast<double>(in[base + c]) - row_max);
+            const float e = std::expf(in[base + c] - row_max);
+            out[base + c] = e;
+            sum += e;
         }
+        const float inv = (sum > 0.0f) ? (1.0f / sum) : 0.0f;
         for (uint32_t c = 0; c < cols; ++c) {
-            out[base + c] = static_cast<float>(
-                std::exp(static_cast<double>(in[base + c]) - row_max) / sum);
+            out[base + c] *= inv;
         }
     }
     return true;
@@ -1228,10 +1275,12 @@ bool LlmEngine::forward_token(uint32_t token_id, uint32_t pos,
         if (!run_rmsnorm(x_.data(), lw.attn_norm.data(), xb_.data(), dim, err)) {
             return false;
         }
-        if (!run_matvec(lw.wq, xb_.data(), q_.data(), err) ||
-            !run_matvec(lw.wk, xb_.data(), k_.data(), err) ||
-            !run_matvec(lw.wv, xb_.data(), v_.data(), err)) {
-            return false;
+        {
+            const WeightMatrix* qkv_mats[3] = {&lw.wq, &lw.wk, &lw.wv};
+            float* qkv_outs[3] = {q_.data(), k_.data(), v_.data()};
+            if (!run_matvec_batch(qkv_mats, qkv_outs, 3u, xb_.data(), err)) {
+                return false;
+            }
         }
         if (cfg_.has_qkv_bias) {
             for (uint32_t i = 0; i < dim && i < lw.bq.size(); ++i) q_[i] += lw.bq[i];
@@ -1295,15 +1344,16 @@ bool LlmEngine::forward_token(uint32_t token_id, uint32_t pos,
         if (!run_rmsnorm(x_.data(), lw.ffn_norm.data(), xb_.data(), dim, err)) {
             return false;
         }
-        if (!run_matvec(lw.w1, xb_.data(), hb_.data(), err) ||
-            !run_matvec(lw.w3, xb_.data(), hb2_.data(), err)) {
-            return false;
-        }
-        if (!run_silu(hb_.data(), hb_act_.data(), cfg_.hidden_dim, err)) {
-            return false;
+        {
+            const WeightMatrix* ffn_mats[2] = {&lw.w1, &lw.w3};
+            float* ffn_outs[2] = {hb_.data(), hb2_.data()};
+            if (!run_matvec_batch(ffn_mats, ffn_outs, 2u, xb_.data(), err)) {
+                return false;
+            }
         }
         for (uint32_t i = 0; i < cfg_.hidden_dim; ++i) {
-            hb_act_[i] *= hb2_[i];
+            const float h = hb_[i];
+            hb_act_[i] = (h / (1.0f + std::expf(-h))) * hb2_[i];
         }
         if (!run_matvec(lw.w2, hb_act_.data(), xb_.data(), err)) {
             return false;

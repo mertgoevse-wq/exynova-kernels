@@ -118,6 +118,18 @@ bool VulkanComputeBackend::matvec_f16(const uint32_t*, const float*, float*, uin
     return false;
 }
 
+bool VulkanComputeBackend::matvec_q4_0_batch(const Q4_0BatchItem*, uint32_t, const float*, uint32_t,
+                                             double*, std::string* err, bool) {
+    set_error(err, "VulkanComputeBackend is not available on host");
+    return false;
+}
+
+bool VulkanComputeBackend::matvec_q8_0_batch(const Q8_0BatchItem*, uint32_t, const float*, uint32_t,
+                                             double*, std::string* err, bool) {
+    set_error(err, "VulkanComputeBackend is not available on host");
+    return false;
+}
+
 bool VulkanComputeBackend::conv2d_nchw(const float*, const float*, const float*, float*,
                                        uint32_t, uint32_t, uint32_t, uint32_t,
                                        uint32_t, uint32_t, uint32_t,
@@ -227,7 +239,9 @@ struct VulkanComputeBackend::Impl {
     std::unordered_map<uint32_t, KernelPipeline> pipelines;
     std::unordered_map<const void*, GpuBuffer>   weight_cache;
     VkDeviceSize                                 cached_bytes = 0;
-    GpuBuffer                                    slot_buffers[4]{};
+    GpuBuffer                                    slot_buffers[12]{};
+
+    static constexpr VkDeviceSize kMaxCacheBytes = 1408ULL * 1024ULL * 1024ULL;
 
     void clear_weight_cache() {
         if (device != VK_NULL_HANDLE) {
@@ -243,7 +257,7 @@ struct VulkanComputeBackend::Impl {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
             clear_weight_cache();
-            for (int i = 0; i < 4; ++i) {
+            for (int i = 0; i < 12; ++i) {
                 destroy_buffer(slot_buffers[i]);
             }
             for (auto& kv : pipelines) {
@@ -547,7 +561,6 @@ struct VulkanComputeBackend::Impl {
                     destroy_buffer(it->second);
                     weight_cache.erase(it);
                 }
-                constexpr VkDeviceSize kMaxCacheBytes = 960ULL * 1024ULL * 1024ULL;
                 if (cached_bytes + bindings[i].size_bytes <= kMaxCacheBytes) {
                     if (!create_buffer(bindings[i].size_bytes, gpu_bufs[i], err)) {
                         cleanup_bufs();
@@ -567,7 +580,7 @@ struct VulkanComputeBackend::Impl {
                     keep_alive[i] = true;
                     continue;
                 }
-                // Exceeded 960 MiB VRAM budget: stream via persistent slot_buffers[i] without evicting active cache
+                // Exceeded VRAM budget: stream via persistent slot_buffers[i] without evicting active cache
             }
 
             if (i < 4u) {
@@ -744,6 +757,270 @@ struct VulkanComputeBackend::Impl {
         cleanup_bufs();
         return true;
     }
+
+    bool prepare_cached_input(const void* data, VkDeviceSize size_bytes,
+                              bool cache_upload, uint32_t fallback_slot,
+                              GpuBuffer& out_buf, bool& keep_alive,
+                              std::vector<GpuBuffer>& temp_bufs, std::string* err) {
+        if (cache_upload && data) {
+            auto it = weight_cache.find(data);
+            if (it != weight_cache.end() && it->second.size == size_bytes) {
+                out_buf = it->second;
+                keep_alive = true;
+                return true;
+            }
+            if (it != weight_cache.end()) {
+                cached_bytes -= it->second.size;
+                destroy_buffer(it->second);
+                weight_cache.erase(it);
+            }
+            if (cached_bytes + size_bytes <= kMaxCacheBytes) {
+                if (!create_buffer(size_bytes, out_buf, err)) {
+                    return false;
+                }
+                std::memcpy(out_buf.mapped, data, static_cast<size_t>(size_bytes));
+                if (!out_buf.coherent) {
+                    VkMappedMemoryRange range{};
+                    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                    range.memory = out_buf.memory;
+                    range.offset = 0;
+                    range.size = VK_WHOLE_SIZE;
+                    vkFlushMappedMemoryRanges(device, 1, &range);
+                }
+                weight_cache.emplace(data, out_buf);
+                cached_bytes += size_bytes;
+                keep_alive = true;
+                return true;
+            }
+        }
+        if (fallback_slot < 12u) {
+            if (!ensure_slot_buffer(fallback_slot, size_bytes, err)) {
+                return false;
+            }
+            out_buf = slot_buffers[fallback_slot];
+            keep_alive = true;
+        } else {
+            if (!create_buffer(size_bytes, out_buf, err)) {
+                return false;
+            }
+            keep_alive = false;
+            temp_bufs.push_back(out_buf);
+        }
+        if (data) {
+            std::memcpy(out_buf.mapped, data, static_cast<size_t>(size_bytes));
+            if (!out_buf.coherent) {
+                VkMappedMemoryRange range{};
+                range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                range.memory = out_buf.memory;
+                range.offset = 0;
+                range.size = VK_WHOLE_SIZE;
+                vkFlushMappedMemoryRanges(device, 1, &range);
+            }
+        }
+        return true;
+    }
+
+    bool dispatch_matvec_batch(KernelId id,
+                               const BufferBinding* w_binds,
+                               const BufferBinding* s_binds,
+                               float* const* outs,
+                               const uint32_t* Ms,
+                               uint32_t count,
+                               const float* x,
+                               uint32_t K,
+                               double* gpu_us,
+                               std::string* err) {
+        if (!initialized) {
+            set_error(err, "VulkanComputeBackend is not initialized");
+            return false;
+        }
+        if (count == 0u) {
+            if (gpu_us) *gpu_us = 0.0;
+            return true;
+        }
+        if (count > 4u) {
+            set_error(err, "Batch size > 4 not supported in dispatch_matvec_batch");
+            return false;
+        }
+
+        const KernelPipeline* kp = get_or_create_pipeline(id, err);
+        if (!kp) return false;
+
+        std::vector<GpuBuffer> temp_bufs;
+        auto cleanup_temps = [&]() {
+            for (auto& b : temp_bufs) destroy_buffer(b);
+        };
+
+        // Slot 0: shared x[K]
+        const VkDeviceSize bytes_x = static_cast<VkDeviceSize>(K) * sizeof(float);
+        GpuBuffer x_buf{};
+        bool x_keep = false;
+        if (!prepare_cached_input(x, bytes_x, false, 0u, x_buf, x_keep, temp_bufs, err)) {
+            cleanup_temps();
+            return false;
+        }
+
+        std::vector<GpuBuffer> w_gpu(count), s_gpu(count), y_gpu(count);
+        for (uint32_t b = 0; b < count; ++b) {
+            bool wk = false, sk = false;
+            if (!prepare_cached_input(w_binds[b].upload_data, w_binds[b].size_bytes,
+                                      w_binds[b].cache_upload, 4u + b * 2u, w_gpu[b], wk, temp_bufs, err) ||
+                !prepare_cached_input(s_binds[b].upload_data, s_binds[b].size_bytes,
+                                      s_binds[b].cache_upload, 5u + b * 2u, s_gpu[b], sk, temp_bufs, err)) {
+                cleanup_temps();
+                return false;
+            }
+            const VkDeviceSize bytes_y = static_cast<VkDeviceSize>(Ms[b]) * sizeof(float);
+            if (!ensure_slot_buffer(1u + b, bytes_y, err)) {
+                cleanup_temps();
+                return false;
+            }
+            y_gpu[b] = slot_buffers[1u + b];
+        }
+
+        VkResult res = vkResetDescriptorPool(device, desc_pool, 0);
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkResetDescriptorPool failed: " + std::to_string(res));
+            return false;
+        }
+
+        std::vector<VkDescriptorSetLayout> layouts(count, kp->desc_set_layout);
+        VkDescriptorSetAllocateInfo ds_alloc{};
+        ds_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ds_alloc.descriptorPool = desc_pool;
+        ds_alloc.descriptorSetCount = count;
+        ds_alloc.pSetLayouts = layouts.data();
+
+        std::vector<VkDescriptorSet> dsets(count, VK_NULL_HANDLE);
+        res = vkAllocateDescriptorSets(device, &ds_alloc, dsets.data());
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkAllocateDescriptorSets(batch) failed: " + std::to_string(res));
+            return false;
+        }
+
+        std::vector<VkDescriptorBufferInfo> binfos(count * 4u);
+        std::vector<VkWriteDescriptorSet> writes(count * 4u);
+        for (uint32_t b = 0; b < count; ++b) {
+            const VkDeviceSize bytes_y = static_cast<VkDeviceSize>(Ms[b]) * sizeof(float);
+            const uint32_t base = b * 4u;
+            binfos[base + 0] = {w_gpu[b].buffer, 0, w_binds[b].size_bytes};
+            binfos[base + 1] = {s_gpu[b].buffer, 0, s_binds[b].size_bytes};
+            binfos[base + 2] = {x_buf.buffer, 0, bytes_x};
+            binfos[base + 3] = {y_gpu[b].buffer, 0, bytes_y};
+            for (uint32_t j = 0; j < 4u; ++j) {
+                writes[base + j] = VkWriteDescriptorSet{};
+                writes[base + j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[base + j].dstSet = dsets[b];
+                writes[base + j].dstBinding = j;
+                writes[base + j].descriptorCount = 1;
+                writes[base + j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                writes[base + j].pBufferInfo = &binfos[base + j];
+            }
+        }
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+        res = vkResetCommandBuffer(cmd_buf, 0);
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkResetCommandBuffer failed: " + std::to_string(res));
+            return false;
+        }
+
+        VkCommandBufferBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        res = vkBeginCommandBuffer(cmd_buf, &begin_info);
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkBeginCommandBuffer failed: " + std::to_string(res));
+            return false;
+        }
+
+        if (gpu_us && query_pool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(cmd_buf, query_pool, 0, 2);
+            vkCmdWriteTimestamp(cmd_buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 0);
+        }
+
+        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, kp->pipeline);
+        for (uint32_t b = 0; b < count; ++b) {
+            vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    kp->pipeline_layout, 0, 1, &dsets[b], 0, nullptr);
+            const uint32_t pc[2] = {Ms[b], K};
+            vkCmdPushConstants(cmd_buf, kp->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), pc);
+            const uint32_t gx = std::min(Ms[b], 32768u);
+            const uint32_t gy = (Ms[b] + 32767u) / 32768u;
+            vkCmdDispatch(cmd_buf, gx, gy, 1u);
+        }
+
+        if (gpu_us && query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(cmd_buf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1);
+        }
+
+        res = vkEndCommandBuffer(cmd_buf);
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkEndCommandBuffer failed: " + std::to_string(res));
+            return false;
+        }
+
+        res = vkResetFences(device, 1, &fence);
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkResetFences failed: " + std::to_string(res));
+            return false;
+        }
+
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &cmd_buf;
+
+        const auto t_start = std::chrono::steady_clock::now();
+        res = vkQueueSubmit(queue, 1, &submit_info, fence);
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkQueueSubmit(batch) failed: " + std::to_string(res));
+            return false;
+        }
+        res = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        const auto t_end = std::chrono::steady_clock::now();
+        if (res != VK_SUCCESS) {
+            cleanup_temps();
+            set_error(err, "vkWaitForFences(batch) failed: " + std::to_string(res));
+            return false;
+        }
+
+        if (gpu_us) {
+            double measured_us = std::chrono::duration<double, std::micro>(t_end - t_start).count();
+            if (query_pool != VK_NULL_HANDLE && timestamp_period_ns > 0.0f) {
+                uint64_t timestamps[2] = {};
+                if (vkGetQueryPoolResults(device, query_pool, 0, 2, sizeof(timestamps), timestamps,
+                                          sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
+                    const uint64_t mask = (timestamp_valid_bits >= 64) ? ~0ULL : ((1ULL << timestamp_valid_bits) - 1ULL);
+                    measured_us = static_cast<double>((timestamps[1] - timestamps[0]) & mask) *
+                                  static_cast<double>(timestamp_period_ns) / 1000.0;
+                }
+            }
+            *gpu_us = measured_us;
+        }
+
+        for (uint32_t b = 0; b < count; ++b) {
+            if (!y_gpu[b].coherent) {
+                VkMappedMemoryRange range{};
+                range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                range.memory = y_gpu[b].memory;
+                range.offset = 0;
+                range.size = VK_WHOLE_SIZE;
+                vkInvalidateMappedMemoryRanges(device, 1, &range);
+            }
+            std::memcpy(outs[b], y_gpu[b].mapped, static_cast<size_t>(Ms[b]) * sizeof(float));
+        }
+
+        cleanup_temps();
+        return true;
+    }
 };
 
 VulkanComputeBackend::VulkanComputeBackend() : impl_(std::make_unique<Impl>()) {}
@@ -884,11 +1161,11 @@ bool VulkanComputeBackend::initialize(std::string* err) {
 
     VkDescriptorPoolSize pool_size{};
     pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    pool_size.descriptorCount = 16;
+    pool_size.descriptorCount = 32;
 
     VkDescriptorPoolCreateInfo dp_info{};
     dp_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dp_info.maxSets = 4;
+    dp_info.maxSets = 8;
     dp_info.poolSizeCount = 1;
     dp_info.pPoolSizes = &pool_size;
 
@@ -1238,6 +1515,74 @@ bool VulkanComputeBackend::matvec_f16(const uint32_t* packed_f16x2,
     const uint32_t gy = (M + 32767u) / 32768u;
     return impl_->dispatch_kernel(KernelId::MatVecF16, bindings, 3,
                                   pc, sizeof(pc), gx, gy, 1, gpu_us, err);
+}
+
+bool VulkanComputeBackend::matvec_q4_0_batch(const Q4_0BatchItem* items, uint32_t count,
+                                             const float* x, uint32_t K,
+                                             double* gpu_us, std::string* err,
+                                             bool cache_weights) {
+    if (count == 0u || K == 0u) {
+        if (gpu_us) *gpu_us = 0.0;
+        return true;
+    }
+    if (!items || !x) {
+        set_error(err, "Null pointer passed to matvec_q4_0_batch");
+        return false;
+    }
+    if (K % 32u != 0u || count > 4u) {
+        set_error(err, "matvec_q4_0_batch requires K%32==0 and 1..4 items");
+        return false;
+    }
+    BufferBinding wb[4]{}, sb[4]{};
+    float* outs[4]{};
+    uint32_t Ms[4]{};
+    for (uint32_t b = 0; b < count; ++b) {
+        if (!items[b].packed_q4 || !items[b].scales || !items[b].y || items[b].M == 0u) {
+            set_error(err, "Invalid Q4_0BatchItem");
+            return false;
+        }
+        Ms[b] = items[b].M;
+        outs[b] = items[b].y;
+        wb[b] = {items[b].packed_q4, nullptr,
+                 static_cast<VkDeviceSize>(items[b].M) * (K / 8u) * sizeof(uint32_t), cache_weights};
+        sb[b] = {items[b].scales, nullptr,
+                 static_cast<VkDeviceSize>(items[b].M) * (K / 32u) * sizeof(float), cache_weights};
+    }
+    return impl_->dispatch_matvec_batch(KernelId::MatVecQ4_0, wb, sb, outs, Ms, count, x, K, gpu_us, err);
+}
+
+bool VulkanComputeBackend::matvec_q8_0_batch(const Q8_0BatchItem* items, uint32_t count,
+                                             const float* x, uint32_t K,
+                                             double* gpu_us, std::string* err,
+                                             bool cache_weights) {
+    if (count == 0u || K == 0u) {
+        if (gpu_us) *gpu_us = 0.0;
+        return true;
+    }
+    if (!items || !x) {
+        set_error(err, "Null pointer passed to matvec_q8_0_batch");
+        return false;
+    }
+    if (K % 32u != 0u || count > 4u) {
+        set_error(err, "matvec_q8_0_batch requires K%32==0 and 1..4 items");
+        return false;
+    }
+    BufferBinding wb[4]{}, sb[4]{};
+    float* outs[4]{};
+    uint32_t Ms[4]{};
+    for (uint32_t b = 0; b < count; ++b) {
+        if (!items[b].packed_i8 || !items[b].scales || !items[b].y || items[b].M == 0u) {
+            set_error(err, "Invalid Q8_0BatchItem");
+            return false;
+        }
+        Ms[b] = items[b].M;
+        outs[b] = items[b].y;
+        wb[b] = {items[b].packed_i8, nullptr,
+                 static_cast<VkDeviceSize>(items[b].M) * (K / 4u) * sizeof(int32_t), cache_weights};
+        sb[b] = {items[b].scales, nullptr,
+                 static_cast<VkDeviceSize>(items[b].M) * (K / 32u) * sizeof(float), cache_weights};
+    }
+    return impl_->dispatch_matvec_batch(KernelId::MatVecQ8_0, wb, sb, outs, Ms, count, x, K, gpu_us, err);
 }
 
 bool VulkanComputeBackend::conv2d_nchw(const float* input, const float* weight, const float* bias, float* out,

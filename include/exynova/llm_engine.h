@@ -202,6 +202,8 @@ private:
                      uint32_t cols, std::string* err);
     bool run_matvec(const WeightMatrix& w, const float* x, float* y,
                     std::string* err);
+    bool run_matvec_batch(const WeightMatrix* const* mats, float* const* outs,
+                          uint32_t count, const float* x, std::string* err);
     bool run_rope(const float* in, float* out, uint32_t num_heads,
                   uint32_t head_dim, uint32_t pos, std::string* err);
     bool run_silu(const float* in, float* out, uint32_t count, std::string* err);
@@ -246,6 +248,7 @@ private:
     std::vector<float> hb2_;
     std::vector<float> att_scores_;
     std::vector<float> att_probs_;
+    std::vector<float> rope_inv_freq_;
     std::vector<float> x_pad_;
 };
 

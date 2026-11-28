@@ -154,9 +154,9 @@ def build_flappy_chart(report: dict) -> str:
 def build_llm_chart(report: dict) -> str:
     npu = report.get("npu_dynamic", {})
     llms = report.get("multi_llm", [
-        {"name": "TinyStories-15M Q4_0", "tok_s": 18.38, "note": "44.2 MB · 6L · Slot-Buffer Boost", "col": "#10B981"},
-        {"name": "Qwen2.5-0.5B Q8_0", "tok_s": 2.60, "note": "789.9 MB · 24L · 2D-Dispatch Fix", "col": "#00E5FF"},
-        {"name": "Qwen2.5-1.5B Q4_0", "tok_s": 1.56, "note": "1.48 GB · 28L · NPU+GPU Hybrid APK", "col": "#A78BFA"},
+        {"name": "TinyStories-15M Q4_0", "tok_s": 28.43, "note": "44.2 MB · 6L · Batched Vulkan", "col": "#10B981"},
+        {"name": "Qwen2.5-0.5B Q8_0", "tok_s": 5.71, "note": "789.8 MB · 24L · 3.0x Speedup", "col": "#00E5FF"},
+        {"name": "Qwen2.5-1.5B Q4_0", "tok_s": 2.85, "note": "1.48 GB · 28L · NPU+GPU Hybrid", "col": "#A78BFA"},
     ])
 
     w, h = 880, 340
@@ -167,7 +167,7 @@ def build_llm_chart(report: dict) -> str:
         '</linearGradient></defs>',
         f'<rect width="{w}" height="{h}" rx="14" fill="url(#bgl)" stroke="#1E293B" stroke-width="2"/>',
         '<text x="28" y="36" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold">Galaxy A56 On-Device LLM Speed + Dynamic NPU Proof</text>',
-        '<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Persistent Vulkan slot buffers on Xclipse 540 + live Scene-A vs Scene-B NPU verification</text>',
+        '<text x="28" y="57" fill="#94A3B8" font-family="Segoe UI, Arial, sans-serif" font-size="12">Batched QKV/FFN Vulkan MatVec + 1408 MiB Cache on Xclipse 540 + ENN /dev/vertex10</text>',
     ]
 
     cw, ch = 264, 145

@@ -8,36 +8,36 @@
 <rect x="375" y="66" width="12" height="10" rx="2" fill="#475569"/><text x="392" y="75" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="11">Host / Scene Prep</text>
 <text x="193" y="119" text-anchor="end" fill="#F8FAFC" font-family="Consolas, monospace" font-size="12.5" font-weight="bold">Flappy · NPU</text>
 <rect x="205" y="98" width="490" height="32" rx="7" fill="#1E293B"/>
-<rect x="205.0" y="98" width="344.4" height="32" rx="4" fill="#F59E0B"/>
-<rect x="549.4" y="98" width="16.9" height="32" rx="4" fill="#475569"/>
-<text x="576.2" y="119" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">6.36 ms (157 Hz) · NPU 6.06 / GPU 0.000</text>
+<rect x="205.0" y="98" width="362.7" height="32" rx="4" fill="#F59E0B"/>
+<rect x="567.7" y="98" width="16.2" height="32" rx="4" fill="#475569"/>
+<text x="593.9" y="119" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">6.90 ms (145 Hz) · NPU 6.60 / GPU 0.000</text>
 <text x="193" y="169" text-anchor="end" fill="#F8FAFC" font-family="Consolas, monospace" font-size="12.5" font-weight="bold">Flappy · NPU+GPU</text>
 <rect x="205" y="148" width="490" height="32" rx="7" fill="#1E293B"/>
-<rect x="205.0" y="148" width="342.9" height="32" rx="4" fill="#F59E0B"/>
-<rect x="547.9" y="148" width="1.6" height="32" rx="4" fill="#00E5FF"/>
-<rect x="549.5" y="148" width="144.7" height="32" rx="4" fill="#475569"/>
-<text x="704.1" y="169" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">8.61 ms (116 Hz) · NPU 6.03 / GPU 0.028</text>
+<rect x="205.0" y="148" width="348.0" height="32" rx="4" fill="#F59E0B"/>
+<rect x="553.0" y="148" width="1.5" height="32" rx="4" fill="#00E5FF"/>
+<rect x="554.5" y="148" width="140.5" height="32" rx="4" fill="#475569"/>
+<text x="705.0" y="169" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">8.92 ms (112 Hz) · NPU 6.33 / GPU 0.027</text>
 <text x="193" y="219" text-anchor="end" fill="#F8FAFC" font-family="Consolas, monospace" font-size="12.5" font-weight="bold">Flappy · GPU</text>
 <rect x="205" y="198" width="490" height="32" rx="7" fill="#1E293B"/>
-<rect x="205.0" y="198" width="2.2" height="32" rx="4" fill="#00E5FF"/>
-<rect x="207.2" y="198" width="43.0" height="32" rx="4" fill="#475569"/>
-<text x="260.2" y="219" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">0.80 ms (1258 Hz) · NPU 0.00 / GPU 0.039</text>
+<rect x="205.0" y="198" width="2.1" height="32" rx="4" fill="#00E5FF"/>
+<rect x="207.1" y="198" width="37.0" height="32" rx="4" fill="#475569"/>
+<text x="254.1" y="219" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">0.71 ms (1406 Hz) · NPU 0.00 / GPU 0.038</text>
 <text x="193" y="269" text-anchor="end" fill="#F8FAFC" font-family="Consolas, monospace" font-size="12.5" font-weight="bold">Flappy · GPU+NPU</text>
 <rect x="205" y="248" width="490" height="32" rx="7" fill="#1E293B"/>
-<rect x="205.0" y="248" width="346.5" height="32" rx="4" fill="#F59E0B"/>
-<rect x="551.5" y="248" width="1.6" height="32" rx="4" fill="#00E5FF"/>
-<rect x="553.2" y="248" width="141.8" height="32" rx="4" fill="#475569"/>
-<text x="705.0" y="269" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">8.62 ms (116 Hz) · NPU 6.10 / GPU 0.029</text>
+<rect x="205.0" y="248" width="327.9" height="32" rx="4" fill="#F59E0B"/>
+<rect x="532.9" y="248" width="1.5" height="32" rx="4" fill="#00E5FF"/>
+<rect x="534.5" y="248" width="128.9" height="32" rx="4" fill="#475569"/>
+<text x="673.4" y="269" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">8.34 ms (120 Hz) · NPU 5.97 / GPU 0.028</text>
 <text x="193" y="319" text-anchor="end" fill="#F8FAFC" font-family="Consolas, monospace" font-size="12.5" font-weight="bold">Swarm · GPU (128x MLP)</text>
 <rect x="205" y="298" width="490" height="32" rx="7" fill="#1E293B"/>
-<rect x="205.0" y="298" width="1.6" height="32" rx="4" fill="#00E5FF"/>
-<rect x="206.6" y="298" width="49.6" height="32" rx="4" fill="#475569"/>
-<text x="266.3" y="319" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">0.90 ms (1109 Hz) · NPU 0.00 / GPU 0.029</text>
+<rect x="205.0" y="298" width="1.5" height="32" rx="4" fill="#00E5FF"/>
+<rect x="206.5" y="298" width="33.0" height="32" rx="4" fill="#475569"/>
+<text x="249.6" y="319" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">0.63 ms (1589 Hz) · NPU 0.00 / GPU 0.028</text>
 <text x="193" y="369" text-anchor="end" fill="#F8FAFC" font-family="Consolas, monospace" font-size="12.5" font-weight="bold">Swarm · GPU+NPU (128x+Scan)</text>
 <rect x="205" y="348" width="490" height="32" rx="7" fill="#1E293B"/>
-<rect x="205.0" y="348" width="351.5" height="32" rx="4" fill="#F59E0B"/>
-<rect x="556.5" y="348" width="1.8" height="32" rx="4" fill="#00E5FF"/>
-<rect x="558.2" y="348" width="134.5" height="32" rx="4" fill="#475569"/>
-<text x="702.7" y="369" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">8.58 ms (117 Hz) · NPU 6.18 / GPU 0.031</text>
+<rect x="205.0" y="348" width="327.2" height="32" rx="4" fill="#F59E0B"/>
+<rect x="532.2" y="348" width="1.7" height="32" rx="4" fill="#00E5FF"/>
+<rect x="533.9" y="348" width="137.7" height="32" rx="4" fill="#475569"/>
+<text x="681.6" y="369" fill="#E2E8F0" font-family="Consolas, monospace" font-size="11.5">8.49 ms (118 Hz) · NPU 5.96 / GPU 0.031</text>
 <text x="28" y="418" fill="#64748B" font-family="Segoe UI, Arial, sans-serif" font-size="11">All modes executed live on SM-A566B without CPU fallback guards or collision teleports</text>
 </svg>
